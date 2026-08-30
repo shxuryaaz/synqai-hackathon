@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 import openpyxl
 from common import BUNDLE, DB, db, mask, canon_vehicle, canon_client
+import llm
 
 PRECEDENCE = ["fleet_master", "maintenance_log", "tickets", "emails", "transcript"]
 
@@ -82,8 +83,12 @@ def load_maintenance(con):
         kinds = [k for k, p in NOTE_PATTERNS.items() if p.search(notes or "")]
         for k in kinds:
             con.execute("insert into maint_events values(?,?,?,?)", (i, k, "regex", None))
-        if not kinds:
-            con.execute("insert into maint_events values(?,?,?,?)", (i, "unclassified", "none", None))
+        if not kinds:  # regex found nothing: ask the model, cite the row, keep going if it fails
+            kinds = llm.extract_note(mask(notes or "")) or []
+            for k in kinds:
+                con.execute("insert into maint_events values(?,?,?,?)", (i, k, "llm", f"maintenance_log.xlsx row {i}"))
+            if not kinds:
+                con.execute("insert into maint_events values(?,?,?,?)", (i, "unclassified", "none", llm.last_error))
     con.execute("update vehicles set last_service_date=(select max(date) from maintenance m where m.vehicle_canon=vehicles.canon)")
     # Odometer is a time series; only the latest workshop reading is a fact.
     for r in con.execute("select row, date, vehicle_canon, odometer_km from maintenance m where vehicle_canon is not null and date=(select max(date) from maintenance where vehicle_canon=m.vehicle_canon)").fetchall():

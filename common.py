@@ -48,7 +48,11 @@ def canon_client(s):
     for canon, aliases in CLIENT_ALIASES.items():
         if key in aliases:
             return canon
-    return None
+    try:  # persisted fuzzy-match proposals (llm.py job 4); re-runs read the table, never re-ask
+        row = db().execute("select canon from entity_map where kind='client' and original=?", (key,)).fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 
 CLIENT_ALIASES = {

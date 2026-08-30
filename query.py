@@ -3,6 +3,7 @@ Run: python query.py "what year is RJ43DD3546"
 """
 import re, sys
 from common import db, canon_vehicle, canon_client
+import llm
 
 
 def retrieve(q):
@@ -35,7 +36,9 @@ def answer(q):
     hits = retrieve(q)
     if not hits:
         return "insufficient data"
-    return "\n".join(f"- {text}\n    source: {ref}" for ref, text in hits)
+    cited = "\n".join(f"- {text}\n    source: {ref}" for ref, text in hits)
+    summary = llm.grounded_answer(q, hits)
+    return (summary + "\n\nRetrieved rows:\n" if summary else "") + cited
 
 
 if __name__ == "__main__":

@@ -4,10 +4,11 @@ Exactly-once: every decision is insert-or-ignore under a hash id; output files a
 in sorted order, so a second run writes the same bytes. Nothing in an output line comes from the wall clock.
 """
 import csv, json, math, re, sys, traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import yaml
-from common import ROOT, OUT, AUDIT, LOGS, db, mask, canon_vehicle, canon_client, stable_id, jsonl_append
+import llm
+from common import ROOT, OUT, AUDIT, LOGS, db, mask, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES
 
 RULES = yaml.safe_load(open(ROOT / "rules.yaml"))
 HUBS = yaml.safe_load(open(ROOT / "hubs.yaml"))
@@ -30,6 +31,7 @@ FIELD_MAP = {
 }
 LOOKUP = {v: k for k, vs in FIELD_MAP.items() for v in vs}
 REQUIRED = ["ticket_id", "vehicle", "created_at", "origin_hub"]
+DRAFT_BY = llm.DRAFT_MODEL
 STEPS = ["Validated", "Enriched", "Rule applied", "Truck selected", "Work order", "Draft created"]
 
 
@@ -51,7 +53,7 @@ def parse_date(v):
         return None
     if isinstance(v, (int, float)) or re.fullmatch(r"\d{10,13}", str(v)):
         n = float(v)
-        return datetime.utcfromtimestamp(n / 1000 if n > 1e11 else n).replace(microsecond=0).isoformat()
+        return datetime.fromtimestamp(n / 1000 if n > 1e11 else n, timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
     s = str(v).strip().replace("Z", "")
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d",
                 "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
@@ -190,7 +192,13 @@ def process(con, rec, source_file, seen):
         LOG.append({"event": "already_processed", "ticket_id": tid})
         return
     dt = datetime.fromisoformat(created)
-    client = canon_client(t.get("client")) or "Internal"
+    client = canon_client(t.get("client"))
+    if client is None and t.get("client"):
+        client = llm.propose_match(str(t["client"]), list(CLIENT_ALIASES))
+        if client:
+            con.execute("insert or ignore into entity_map values('client',?,?,'llm')", (re.sub(r"[^a-z]", "", str(t["client"]).lower()), client))
+            LOG.append({"event": "client_match_proposed", "ticket_id": tid, "original": t["client"], "canon": client})
+    client = client or "Internal"
     con.execute("insert or ignore into tickets values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tid, created, vc, t["vehicle"], t.get("driver_id"), t["origin_hub"], float(t.get("km_from_origin_hub") or 0), t.get("destination") or t["origin_hub"],
                  t.get("issue") or "", t.get("severity"), client, t.get("status"), source_file))
@@ -277,13 +285,20 @@ def process(con, rec, source_file, seen):
     if client == "Internal":
         audit(con, tid, 6, STEPS[5], created, "internal ticket, no client message", {})
     else:
-        body = draft_body(client, vc, t, chosen, chosen_hub, eta, flags, params)
+        facts = {"client": client, "truck": vc, "route": f"{t['origin_hub']} to {ctx['destination']}", "fault": t.get("issue"), "km_from_hub": int(ctx["km_from_origin_hub"]),
+                 "replacement": chosen["canon"] if chosen else None, "replacement_hub": chosen_hub, "revised_delivery": eta.strftime("%d %b %H:%M") if eta else None,
+                 "notes": flags + (["ETA includes monsoon allowance"] if params.get("eta_pad", 1) > 1 else []), "hub_desk": t["origin_hub"]}
+        body = llm.draft(facts)
+        drafted_by = DRAFT_BY if body else "template"
+        if not body:
+            body = draft_body(client, vc, t, chosen, chosen_hub, eta, flags, params)
+            audit(con, tid, 6, "Draft fallback", created, f"model unavailable ({llm.last_error}); template used", {}, by="code")
         why = why_text(t, client, chosen, chosen_hub, skipped, params, applied + rules_hit)
         recipient = con.execute("select sender from emails where sender like ? order by thread limit 1", (f"%{client.split()[0].lower()}%",)).fetchone()
         con.execute("insert or ignore into comms(message_id, ticket_id, recipient, body, context, citations, drafted_by) values(?,?,?,?,?,?,?)",
                     (stable_id("MSG", tid), tid, recipient[0] if recipient else f"{client} dispatch desk", mask(body),
-                     json.dumps({"why": why, "rules": applied + rules_hit, "severity": sev, "eta": eta.isoformat() if eta else None, "flags": flags}, ensure_ascii=False), json.dumps(citations, ensure_ascii=False), "template"))
-        audit(con, tid, 6, STEPS[5], created, f"client message drafted for {client}, awaiting approval", {"recipient": recipient[0] if recipient else None}, applied + rules_hit)
+                     json.dumps({"why": why, "rules": applied + rules_hit, "severity": sev, "eta": eta.isoformat() if eta else None, "flags": flags}, ensure_ascii=False), json.dumps(citations, ensure_ascii=False), drafted_by))
+        audit(con, tid, 6, STEPS[5], created, f"client message drafted for {client} by {drafted_by}, awaiting approval", {"recipient": recipient[0] if recipient else None}, applied + rules_hit, by="LLM" if drafted_by != "template" else "code")
 
 
 def draft_body(client, vc, t, chosen, hub, eta, flags, params):

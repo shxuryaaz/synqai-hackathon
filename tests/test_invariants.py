@@ -85,3 +85,25 @@ def test_double_approval_does_not_double_send(work):
     assert len(sent) == 1 and sent[0]["approved_by"] == "Ramesh Kumar"
     assert any(l["step"] == "Approval repeated" for l in lines(work / "audit" / "audit.jsonl") if l["ticket_id"] == "TKT-0009")
     assert run(work, "pii_scan.py").returncode == 0
+
+
+def test_cold_then_warm_llm_cache_identical(work, tmp_path):
+    """Run 1 calls the (fake) model, run 2 must hit the cache. The fake returns a different draft on every real call."""
+    counter = tmp_path / "calls"
+    env = {"MERIDIAN_LLM_FAKE": str(counter)}
+    subprocess.run([sys.executable, "pipeline.py", str(TICKETS)], cwd=ROOT, env={**os.environ, "MERIDIAN_WORK": str(work), **env}, check=True, capture_output=True)
+    first = (work / "outputs" / "comms_pending.jsonl").read_bytes()
+    calls_after_cold = int(counter.read_text())
+    subprocess.run([sys.executable, "pipeline.py", str(TICKETS)], cwd=ROOT, env={**os.environ, "MERIDIAN_WORK": str(work), **env}, check=True, capture_output=True)
+    assert (work / "outputs" / "comms_pending.jsonl").read_bytes() == first
+    assert int(counter.read_text()) == calls_after_cold and calls_after_cold > 0
+    assert b"FAKE DRAFT" in first and b'"drafted_by": "gpt-4o"' in first
+
+
+def test_llm_down_falls_back_and_audits(work):
+    env = {**os.environ, "MERIDIAN_WORK": str(work)}
+    env.pop("OPENAI_API_KEY", None)
+    subprocess.run([sys.executable, "pipeline.py", str(TICKETS)], cwd=ROOT, env=env | {"OPENAI_API_KEY": ""}, check=True, capture_output=True)
+    pend = lines(work / "outputs" / "comms_pending.jsonl")
+    assert pend and all(p["drafted_by"] == "template" for p in pend)
+    assert any(l["step"] == "Draft fallback" for l in lines(work / "audit" / "audit.jsonl"))
