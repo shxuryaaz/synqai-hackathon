@@ -3,11 +3,12 @@ Writes comms_sent exactly once per ticket. A second approval is a no-op with an 
 """
 import argparse, json
 from datetime import datetime, timezone
-from common import db, mask, has_pii
+from common import db, mask, mask_data, has_pii
 from pipeline import audit, write_outputs, PIPE_SCHEMA
 
 
 def approve(ticket_id, by, body=None, at=None):
+    ticket_id, by, body, at = mask_data((ticket_id, by, body, at))
     con = db()
     con.executescript(PIPE_SCHEMA)
     row = con.execute("select * from comms where ticket_id=?", (ticket_id,)).fetchone()

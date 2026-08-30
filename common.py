@@ -1,5 +1,5 @@
 """Shared bits: paths, PII masking, canonical ids, sqlite handle."""
-import hashlib, json, os, re, sqlite3
+import hashlib, json, os, re, sqlite3, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -24,6 +24,17 @@ def mask(text):
     text = AADHAAR.sub(lambda m: "•••• •••• " + m.group()[-4:], text)
     text = DL.sub(lambda m: m.group()[:4] + " ••••••••" + m.group()[-3:], text)
     return text
+
+
+def mask_data(value):
+    """Recursively mask PII before structured data crosses a persistence or output boundary."""
+    if isinstance(value, dict):
+        return {mask(str(k)): mask_data(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [mask_data(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(mask_data(v) for v in value)
+    return mask(value)
 
 
 def has_pii(text):
@@ -83,7 +94,19 @@ def db():
     return con
 
 
-def jsonl_append(path, obj):
+def atomic_write_jsonl(path, rows, sanitize=True):
+    """Replace a JSONL file only after its complete replacement is durable."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False, sort_keys=True) + "\n")
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as f:
+            temp = Path(f.name)
+            for row in rows:
+                f.write(json.dumps(mask_data(row) if sanitize else row, ensure_ascii=False, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp, path)
+    finally:
+        if temp:
+            temp.unlink(missing_ok=True)

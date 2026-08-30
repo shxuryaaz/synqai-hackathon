@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yaml
-from common import ROOT, WORK, OUT, AUDIT, db, mask, has_pii, pretty_plate
+from common import ROOT, WORK, OUT, AUDIT, atomic_write_jsonl, db, mask, mask_data, has_pii, pretty_plate
 import pipeline, approve as approve_mod, rerun_check, pii_scan, query as query_mod
 
 app = FastAPI(title="Meridian Ops")
@@ -17,7 +17,7 @@ H = pipeline.H
 
 def rows(sql, *args):
     con = db(); con.executescript(pipeline.PIPE_SCHEMA)
-    return [dict(r) for r in con.execute(sql, args)]
+    return [mask_data(dict(r)) for r in con.execute(sql, args)]
 
 
 def meta(key):
@@ -107,10 +107,10 @@ def resubmit(r: Resubmit):
     qs = [dict(x) for x in con.execute("select * from quarantine where ticket_id=? and resubmitted=0", (r.ticket_id,))]
     if not qs:
         return {"result": "not_found"}
-    rec = json.loads(qs[0]["record"]) | {k: mask(str(v)) for k, v in r.fields.items()}
+    rec = json.loads(qs[0]["record"]) | mask_data(r.fields)
     rec.pop("_unmapped", None)
     with con:
-        pipeline.process(con, rec, qs[0]["source_file"] + " (resubmitted)", set())
+        pipeline.process(con, rec, qs[0]["source_file"] + " (resubmitted)", set(), [])
         done = con.execute("select 1 from work_orders where ticket_id=?", (r.ticket_id,)).fetchone()
         if done:
             con.execute("update quarantine set resubmitted=1 where ticket_id=?", (r.ticket_id,))
@@ -154,7 +154,7 @@ def do_scan(s: Scan):
     if s.plant:  # test mode: copy outputs to scratch, plant a fake number, prove the scanner bites
         scratch = WORK / "scratch_pii"
         shutil.rmtree(scratch, ignore_errors=True); shutil.copytree(OUT, scratch)
-        (scratch / "planted.jsonl").write_text('{"body": "driver on +91 98765 43210, aadhaar 1234 5678 9012"}\n')
+        atomic_write_jsonl(scratch / "planted.jsonl", [{"body": "driver on +91 98765 43210, aadhaar 1234 5678 9012"}], sanitize=False)
         hits = pii_scan.scan([scratch]); shutil.rmtree(scratch)
         return {"mode": "planted", "leaks": len(hits), "hits": [{"kind": h["kind"], "file": Path(h["file"]).name, "line": h["line"]} for h in hits]}
     hits = pii_scan.scan([p for p in (OUT, AUDIT, WORK / "logs") if p.exists()])
@@ -175,7 +175,7 @@ def rules():
 
 @app.get("/api/query")
 def q(q: str):
-    return {"question": q, "answer": query_mod.answer(q)}
+    return mask_data({"question": q, "answer": query_mod.answer(mask(q))})
 
 
 @app.get("/api/random-ticket")
