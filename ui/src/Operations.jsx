@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Marker, Polyline, Tooltip, useMap } from 'react-leaflet'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MapContainer, TileLayer, Marker, Polyline, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { get, when } from './api'
-import { Card, Chip, Empty, Icon, I, sevColor, statusTone } from './ui'
+import { Card, Chip, Empty, ErrorState, Icon, I, Loading, sevColor, statusTone } from './ui'
 
 const pinIcon = (sel) => L.divIcon({ className: '', iconSize: [24, 30], iconAnchor: [12, 30], html:
   `<svg width="24" height="30" viewBox="0 0 24 30" class="${sel ? 'pin-sel' : ''}"><path d="M12 30 L3 16 a11 11 0 1 1 18 0 z" fill="#dc2626"/><circle cx="12" cy="13" r="4" fill="#fff"/></svg>` })
@@ -18,11 +18,11 @@ export function FleetMap({ items, hubs, selected, onSelect, className = '' }) {
   return (
     <MapContainer center={[28.4, 77.8]} zoom={6} className={`z-0 rounded-xl border border-line ${className}`} scrollWheelZoom={false}>
       <TileLayer url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
-      {Object.entries(hubs || {}).map(([n, h]) => <Marker key={n} position={[h.lat, h.lon]} icon={hubIcon}><Tooltip direction="right" offset={[10, 0]} permanent className="!border-0 !bg-transparent !shadow-none !font-semibold">{n}</Tooltip></Marker>)}
+      {Object.entries(hubs || {}).map(([n, h]) => <Marker key={n} position={[h.lat, h.lon]} icon={hubIcon} alt={`${n} hub`} title={`${n} hub`}><Tooltip direction="right" offset={[10, 0]} permanent className="!border-0 !bg-transparent !shadow-none !font-semibold">{n}</Tooltip></Marker>)}
       {items.filter(b => b.status !== 'Resolved').map(b => (
         <span key={b.ticket_id}>
           {b.hub && <Polyline positions={[[b.hub.lat, b.hub.lon], [b.point.lat, b.point.lon]]} pathOptions={{ color: '#4f46e5', weight: 2, dashArray: '6 6' }} />}
-          <Marker position={[b.point.lat, b.point.lon]} icon={pinIcon(selected === b.ticket_id)} eventHandlers={{ click: () => onSelect?.(b.ticket_id) }}><Tooltip>{b.summary}</Tooltip></Marker>
+          <Marker position={[b.point.lat, b.point.lon]} icon={pinIcon(selected === b.ticket_id)} alt={`${b.severity} severity breakdown: ${b.summary}`} title={b.summary} eventHandlers={{ click: () => onSelect?.(b.ticket_id) }}><Tooltip>{b.summary}</Tooltip></Marker>
         </span>
       ))}
       <Focus item={items.find(b => b.ticket_id === selected)} />
@@ -31,12 +31,13 @@ export function FleetMap({ items, hubs, selected, onSelect, className = '' }) {
 }
 
 export function BreakdownCard({ b, selected, onSelect, onHistory }) {
+  const select = () => onSelect?.(b.ticket_id)
   return (
-    <Card onClick={() => onSelect?.(b.ticket_id)} className={`flex cursor-pointer gap-3 ${selected ? 'border-ind ring-[3px] ring-ind-soft' : ''}`}>
-      <span className={`mt-2 h-2.5 w-2.5 shrink-0 rounded-full ${sevColor(b.severity)}`} />
-      <div className="flex grow flex-col gap-1.5">
+    <Card role="button" tabIndex="0" aria-pressed={selected} aria-label={`${b.severity} severity breakdown. ${b.summary}`} onClick={select} onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select() } }} className={`flex min-w-0 cursor-pointer gap-3 ${selected ? 'border-ind ring-[3px] ring-ind-soft' : ''}`}>
+      <span aria-hidden="true" className={`mt-2 h-2.5 w-2.5 shrink-0 rounded-full ${sevColor(b.severity)}`} />
+      <div className="flex min-w-0 grow flex-col gap-1.5">
         <div className="font-medium leading-snug">{b.summary}</div>
-        <div className="text-sm text-sub">{b.replacement_line}</div>
+        <div className="text-sm text-sub"><span className="font-medium">{b.severity} severity</span> · {b.replacement_line}</div>
         <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
           <Chip t={statusTone(b.status)}>{b.status}</Chip>
           <div className="flex items-center gap-3 text-sm text-mute"><span className="flex items-center gap-1"><Icon d={I.clock} size={14} />{when(b.at)}</span>
@@ -50,8 +51,29 @@ export function BreakdownCard({ b, selected, onSelect, onHistory }) {
 export default function Operations({ tick, onHistory, mobileView }) {
   const [data, setData] = useState({ items: [], hubs: {} })
   const [sel, setSel] = useState(null)
-  useEffect(() => { get('breakdowns').then(setData) }, [tick])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const latest = useRef(0)
+  const load = useCallback(async () => {
+    const request = ++latest.current
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await get('breakdowns')
+      if (request === latest.current) setData(next)
+    } catch (reason) {
+      if (request === latest.current) setError(reason)
+    } finally {
+      if (request === latest.current) setLoading(false)
+    }
+  }, [])
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => { void load() })
+    return () => { cancelAnimationFrame(frame); latest.current += 1 }
+  }, [load, tick])
   const open = useMemo(() => data.items.filter(b => b.status !== 'Resolved').length, [data])
+  if (loading) return <Loading label="Loading breakdowns" />
+  if (error) return <ErrorState error={error} onRetry={load} title="Could not load breakdowns." />
   const feed = (
     <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between"><h2 className="text-lg font-semibold">Breakdowns</h2><span className="text-sm text-mute">Newest first</span></div>
@@ -68,7 +90,7 @@ export default function Operations({ tick, onHistory, mobileView }) {
   )
   return (
     <>
-      <div className="hidden gap-6 md:flex"><div className="w-[60%] shrink-0">{map}</div><div className="grow">{feed}</div></div>
+      <div className="hidden gap-6 md:flex"><div className="w-[60%] shrink-0">{map}</div><div className="min-w-0 grow">{feed}</div></div>
       <div className="md:hidden">{mobileView === 'map' ? map : feed}</div>
     </>
   )

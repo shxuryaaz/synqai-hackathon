@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { get, post, when } from './api'
-import { Btn, Card, Chip, Empty, Icon, I, RuleChip, Section } from './ui'
+import { Btn, Card, Chip, Empty, ErrorState, Icon, I, Loading, RuleChip, Section } from './ui'
 
-const APPROVER = 'Dispatcher on duty'   // ponytail: single-user console, no login. Swap for a real identity when there is one.
+const reviewerKey = 'meridian-reviewer'
+const savedReviewer = () => {
+  try { return localStorage.getItem(reviewerKey) || '' } catch { return '' }
+}
 
 function Row({ it, sel, onClick }) {
   return (
@@ -17,16 +20,31 @@ function Row({ it, sel, onClick }) {
 export function Detail({ it, onDone, onHistory, onBack }) {
   const [editing, setEditing] = useState(false)
   const [body, setBody] = useState(it.body)
+  const [reviewer, setReviewer] = useState(savedReviewer)
   const [busy, setBusy] = useState(false)
-  useEffect(() => { setBody(it.body); setEditing(false) }, [it])
-  const approve = async () => { setBusy(true); await post('approve', { ticket_id: it.ticket_id, by: APPROVER, body: editing && body !== it.body ? body : null }); setBusy(false); onDone() }
+  const [error, setError] = useState(null)
+  const approve = async () => {
+    const by = reviewer.trim()
+    if (!by || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await post('approve', { ticket_id: it.ticket_id, by, body: editing && body !== it.body ? body : null })
+      try { localStorage.setItem(reviewerKey, by) } catch { /* local storage may be unavailable */ }
+      await onDone()
+    } catch (reason) {
+      setError(reason)
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <Card className="flex flex-col gap-6 p-5 md:p-8">
+    <Card className="flex min-w-0 flex-col gap-6 p-5 md:p-8">
       <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3">
-          {onBack && <button onClick={onBack} className="flex h-11 w-11 items-center justify-center rounded-[10px] bg-bg"><Icon d={I.back} size={20} /></button>}
-          <div className="flex flex-col gap-1"><h2 className="text-[22px] font-semibold">{it.client}</h2>
-            <div className="text-sm text-sub">To: {it.recipient} · Drafted by {it.drafted_by} · Truck {it.vehicle} · {when(it.at)}</div></div>
+        <div className="flex min-w-0 items-start gap-3">
+          {onBack && <button onClick={onBack} aria-label="Back to approvals" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-bg"><Icon d={I.back} size={20} /></button>}
+          <div className="flex min-w-0 flex-col gap-1"><h2 className="break-words text-[22px] font-semibold">{it.client}</h2>
+            <div className="break-words text-sm text-sub">To: {it.recipient} · Drafted by {it.drafted_by} · Truck {it.vehicle} · {when(it.at)}</div></div>
         </div>
         <button onClick={() => onHistory(it.ticket_id)} className="min-h-11 text-sm text-ind">History</button>
       </div>
@@ -43,9 +61,15 @@ export function Detail({ it, onDone, onHistory, onBack }) {
       </div>
       {it.status === 'pending' ? (
         <>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-sub">Reviewer identity</span>
+            <input value={reviewer} onChange={e => setReviewer(e.target.value)} onBlur={() => { try { localStorage.setItem(reviewerKey, reviewer.trim()) } catch { /* local storage may be unavailable */ } }} required autoComplete="name" placeholder="Enter your name or shift identity" className="h-12 rounded-[10px] border-[1.5px] border-[#cdd1d9] bg-white px-3.5 text-base outline-none focus:border-ind" />
+            <span className="text-sm text-mute">Required for the approval record.</span>
+          </label>
+          {error && <ErrorState error={error} onRetry={approve} title="Approval was not sent." />}
           <div className="mt-auto flex flex-col gap-3 border-t border-line pt-4 md:flex-row">
-            <Btn kind="green" onClick={approve} disabled={busy} className="h-14 grow text-lg"><Icon d={I.send} size={20} />{busy ? 'Sending' : 'Approve & send'}</Btn>
-            <Btn kind="outline" onClick={() => setEditing(e => !e)} className="h-14 text-lg font-medium"><Icon d={I.edit} size={20} />{editing ? 'Done editing' : 'Edit draft'}</Btn>
+            <Btn kind="green" onClick={approve} disabled={busy || !reviewer.trim()} className="h-14 grow text-lg"><Icon d={I.send} size={20} />{busy ? 'Sending' : 'Approve & send'}</Btn>
+            <Btn kind="outline" onClick={() => setEditing(e => !e)} disabled={busy} className="h-14 text-lg font-medium"><Icon d={I.edit} size={20} />{editing ? 'Done editing' : 'Edit draft'}</Btn>
           </div>
           <div className="text-center text-sm text-mute">Sending is final. The client receives this message immediately.</div>
         </>
@@ -58,11 +82,34 @@ export default function Approvals({ tick, onHistory, onChange }) {
   const [d, setD] = useState({ pending: [], sent: [] })
   const [sel, setSel] = useState(null)
   const [mobileOpen, setMobileOpen] = useState(false)
-  const load = () => get('approvals').then(x => { setD(x); setSel(s => s ?? x.pending[0]?.ticket_id ?? null) })
-  useEffect(() => { load() }, [tick])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const latest = useRef(0)
+  const load = useCallback(async () => {
+    const request = ++latest.current
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await get('approvals')
+      if (request === latest.current) {
+        setD(next)
+        setSel(s => s ?? next.pending[0]?.ticket_id ?? null)
+      }
+    } catch (reason) {
+      if (request === latest.current) setError(reason)
+    } finally {
+      if (request === latest.current) setLoading(false)
+    }
+  }, [])
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => { void load() })
+    return () => { cancelAnimationFrame(frame); latest.current += 1 }
+  }, [load, tick])
   const all = [...d.pending, ...d.sent]
   const cur = all.find(i => i.ticket_id === sel)
-  const done = () => { load(); onChange(); setMobileOpen(false) }
+  const done = async () => { await load(); await onChange(); setMobileOpen(false) }
+  if (loading) return <Loading label="Loading approvals" />
+  if (error) return <ErrorState error={error} onRetry={load} title="Could not load approvals." />
   if (all.length === 0) return <Empty title="Nothing waiting for approval." sub="Every drafted message has been sent." />
   const list = (
     <Card className="flex flex-col gap-1 p-2">
@@ -74,8 +121,8 @@ export default function Approvals({ tick, onHistory, onChange }) {
   )
   return (
     <>
-      <div className="hidden gap-6 md:flex"><div className="w-[380px] shrink-0 self-start">{list}</div><div className="grow">{cur && <Detail it={cur} onDone={done} onHistory={onHistory} />}</div></div>
-      <div className="md:hidden">{mobileOpen && cur ? <Detail it={cur} onDone={done} onHistory={onHistory} onBack={() => setMobileOpen(false)} /> : list}</div>
+      <div className="hidden gap-6 lg:flex"><div className="w-[380px] shrink-0 self-start">{list}</div><div className="min-w-0 grow">{cur && <Detail key={cur.ticket_id} it={cur} onDone={done} onHistory={onHistory} />}</div></div>
+      <div className="lg:hidden">{mobileOpen && cur ? <Detail key={cur.ticket_id} it={cur} onDone={done} onHistory={onHistory} onBack={() => setMobileOpen(false)} /> : list}</div>
     </>
   )
 }

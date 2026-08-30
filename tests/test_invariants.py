@@ -79,11 +79,14 @@ def test_surprise_format_is_mapped(work):
 def test_double_approval_does_not_double_send(work):
     run(work, "pipeline.py", str(TICKETS))
     a = json.loads(run(work, "approve.py", "TKT-0009", "--by", "Ramesh Kumar").stdout)
-    b = json.loads(run(work, "approve.py", "TKT-0009", "--by", "Someone Else").stdout)
-    assert a["result"] == "sent" and b["result"] == "already_sent"
+    b = run(work, "approve.py", "TKT-0009", "--by", "Someone Else", check=False)
+    assert a["result"] == "sent"
+    assert b.returncode != 0 and "already sent by Ramesh Kumar" in b.stderr
     sent = lines(work / "outputs" / "comms_sent.jsonl")
     assert len(sent) == 1 and sent[0]["approved_by"] == "Ramesh Kumar"
-    assert any(l["step"] == "Approval repeated" for l in lines(work / "audit" / "audit.jsonl") if l["ticket_id"] == "TKT-0009")
+    approvals = [l for l in lines(work / "audit" / "audit.jsonl")
+                 if l["ticket_id"] == "TKT-0009" and l["step"] == "Approved and sent"]
+    assert len(approvals) == 1
     assert run(work, "pii_scan.py").returncode == 0
 
 

@@ -1,23 +1,63 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { get, when } from './api'
-import { Icon, I, RuleChip } from './ui'
+import { ErrorState, Icon, I, Loading, RuleChip } from './ui'
 import Graph from './Graph'
 
 export default function History({ ticketId, onClose }) {
   const [h, setH] = useState(null)
   const [graph, setGraph] = useState(false)
-  useEffect(() => { setGraph(false); get('history/' + ticketId).then(setH) }, [ticketId])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const dialog = useRef(null)
+  const close = useRef(null)
+  const latest = useRef(0)
+  const title = useId()
+  const load = useCallback(async () => {
+    const request = ++latest.current
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await get('history/' + encodeURIComponent(ticketId))
+      if (request === latest.current) setH(next)
+    } catch (reason) {
+      if (request === latest.current) setError(reason)
+    } finally {
+      if (request === latest.current) setLoading(false)
+    }
+  }, [ticketId])
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => { void load() })
+    return () => { cancelAnimationFrame(frame); latest.current += 1 }
+  }, [load])
+  useEffect(() => {
+    const previous = document.activeElement
+    const onKeyDown = event => {
+      if (event.key === 'Escape') return onClose()
+      if (event.key !== 'Tab') return
+      const focusable = [...(dialog.current?.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') || [])]
+      if (focusable.length === 0) return
+      const first = focusable[0], last = focusable.at(-1)
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    close.current?.focus()
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previous?.focus?.()
+    }
+  }, [onClose])
   const rr = h?.rerun
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-ink/25" onClick={onClose} />
-      <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[520px] flex-col gap-6 overflow-y-auto border-l border-line bg-white px-6 py-7 shadow-[-12px_0_32px_rgba(16,24,40,.12)] md:px-8">
+      <div aria-hidden="true" className="fixed inset-0 z-40 bg-ink/25" onClick={onClose} />
+      <aside ref={dialog} role="dialog" aria-modal="true" aria-labelledby={title} className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[520px] flex-col gap-6 overflow-y-auto border-l border-line bg-white px-5 py-7 shadow-[-12px_0_32px_rgba(16,24,40,.12)] sm:px-6 md:px-8">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1"><h2 className="text-xl font-semibold">{graph ? 'What the system knew' : 'History'}</h2><div className="text-sm text-sub">{ticketId} · every step the system took</div></div>
-          <button onClick={onClose} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-bg text-sub"><Icon d={I.x} size={20} /></button>
+          <div className="min-w-0 flex flex-col gap-1"><h2 id={title} className="text-xl font-semibold">{graph ? 'What the system knew' : 'History'}</h2><div className="break-words text-sm text-sub">{ticketId} · every step the system took</div></div>
+          <button ref={close} onClick={onClose} aria-label="Close history" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-bg text-sub"><Icon d={I.x} size={20} /></button>
         </div>
         <button onClick={() => setGraph(g => !g)} className="flex h-11 items-center justify-center gap-2 rounded-[10px] bg-ind-soft text-base font-semibold text-ind"><Icon d={I.graph} />{graph ? 'View as timeline' : 'View as graph'}</button>
-        {graph ? <Graph ticketId={ticketId} /> : !h ? <div className="text-sub">Loading</div> : h.steps.length === 0 ? <div className="text-sub">No audit trail for this ticket yet.</div> : (
+        {graph ? <Graph ticketId={ticketId} /> : loading ? <Loading label="Loading history" /> : error ? <ErrorState error={error} onRetry={load} title="Could not load history." /> : !h || h.steps.length === 0 ? <div className="text-sub">No audit trail for this ticket yet.</div> : (
           <div className="flex flex-col">
             {h.steps.map((s, i) => {
               const last = i === h.steps.length - 1

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import yaml
 import llm
-from common import ROOT, OUT, AUDIT, LOGS, db, mask, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES, pretty_plate
+from common import ROOT, OUT, AUDIT, LOGS, atomic_write_jsonl, atomic_write_jsonls, db, mask, mask_data, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES, pretty_plate
 
 RULES = yaml.safe_load(open(ROOT / "rules.yaml"))
 HUBS = yaml.safe_load(open(ROOT / "hubs.yaml"))
@@ -31,8 +31,14 @@ FIELD_MAP = {
 }
 LOOKUP = {v: k for k, vs in FIELD_MAP.items() for v in vs}
 REQUIRED = ["ticket_id", "vehicle", "created_at", "origin_hub"]
+JSON_WRAPPER_KEYS = ("tickets", "records", "items")
 DRAFT_BY = llm.DRAFT_MODEL
 STEPS = ["Validated", "Enriched", "Rule applied", "Truck selected", "Work order", "Draft created"]
+MAINT_COMPONENTS = (
+    "ac compressor", "air filter", "alternator", "battery", "brake drum", "brake pad", "clutch plate",
+    "def pump", "fan belt", "front tyre", "fuel injector", "gearbox", "leaf spring", "oil seal", "radiator",
+    "rear tyre", "silencer", "steering pump", "turbo", "wheel bearing",
+)
 
 
 def snake(k):
@@ -52,9 +58,19 @@ def parse_date(v):
     if v is None or v == "":
         return None
     if isinstance(v, (int, float)) or re.fullmatch(r"\d{10,13}", str(v)):
-        n = float(v)
-        return datetime.fromtimestamp(n / 1000 if n > 1e11 else n, timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
-    s = str(v).strip().replace("Z", "")
+        try:
+            n = float(v)
+            return datetime.fromtimestamp(n / 1000 if n > 1e11 else n, timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    s = str(v).strip()
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt.replace(microsecond=0).isoformat()
+    except ValueError:
+        pass
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d",
                 "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
                 "%d %b %Y %H:%M", "%d %b %Y"):
@@ -65,17 +81,47 @@ def parse_date(v):
     return None
 
 
+def event_key(value, kind, event_id):
+    """Chronology key. At equal instants, an issue precedes a dispatch; invalid evidence has no key."""
+    parsed = parse_date(value)
+    return (datetime.fromisoformat(parsed), kind, str(event_id)) if parsed else None
+
+
+def maintenance_component(notes):
+    text = str(notes or "").lower()
+    return next((component for component in MAINT_COMPONENTS if re.search(rf"\b{re.escape(component)}\b", text)), None)
+
+
+def record_order(rec):
+    """Stable processing order, including duplicate and invalid records."""
+    mapped = map_record(rec)[0] if isinstance(rec, dict) else {}
+    key = event_key(mapped.get("created_at"), 0, mapped.get("ticket_id") or "")
+    return (key is None, key or (datetime.max, 0, ""), json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str))
+
+
 def read_ticket_file(path):
     p = Path(path)
     text = p.read_text(encoding="utf-8")
     if p.suffix == ".csv":
         return list(csv.DictReader(text.splitlines()))
     if p.suffix == ".jsonl":
-        return [json.loads(l) for l in text.splitlines() if l.strip()]
+        records = []
+        for line_number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                records.append({"_jsonl_error": f"line {line_number}: {e.msg}", "_raw": line})
+        return records
     data = json.loads(text)
     if isinstance(data, dict):
-        data = next((v for v in data.values() if isinstance(v, list)), [])
-    return data
+        mapped, _ = map_record(data)
+        if all(str(mapped.get(field) or "").strip() for field in REQUIRED):
+            return [data]
+        wrapped = next((data.get(key) for key in JSON_WRAPPER_KEYS if isinstance(data.get(key), list)), None)
+        return wrapped if wrapped is not None else [data]
+    return data if isinstance(data, list) else [data]
 
 
 # ---- geometry ---------------------------------------------------------------------------------
@@ -124,23 +170,48 @@ def candidate_fails(require, cand, ctx, con):
             if row:
                 return f"brake work on {row['date']}"
         if k == "service_overdue_days_lte":
-            last = con.execute("select max(date) d from maintenance where vehicle_canon=? and date<=?", (cand["canon"], t.date().isoformat())).fetchone()["d"]
-            if last:
-                due = datetime.fromisoformat(last) + timedelta(days=HUBS["service_interval_days"])
-                overdue = (t - due).days
-                if overdue > v:
-                    return f"service overdue {overdue} days (due {due.date()})"
+            dates = [datetime.fromisoformat(parsed) for row in con.execute("select date from maintenance where vehicle_canon=?", (cand["canon"],))
+                     if (parsed := parse_date(row["date"])) and datetime.fromisoformat(parsed).date() <= t.date()]
+            if not dates:
+                return f"no maintenance evidence before {t.date()}"
+            due = max(dates) + timedelta(days=HUBS["service_interval_days"])
+            overdue = (t - due).days
+            if overdue > v:
+                return f"service overdue {overdue} days (due {due.date()})"
         if k == "jugaad_stays_home":
-            row = con.execute("select date from maintenance m join maint_events e on e.maint_row=m.row where vehicle_canon=? and kind='jugaad' and date<=? and date>=? order by date desc limit 1",
-                              (cand["canon"], t.date().isoformat(), (t - timedelta(days=v)).date().isoformat())).fetchone()
-            if row and H.get(cand["home_hub"], {}).get("region") != H.get(ctx["destination"], {}).get("region"):
-                return f"jugaad on {row['date']}, must stay in {H.get(cand['home_hub'], {}).get('region')}"
+            patches = [(datetime.fromisoformat(parsed).date(), row["row"], maintenance_component(row["notes"])) for row in con.execute(
+                "select m.row, m.date, m.notes from maintenance m join maint_events e on e.maint_row=m.row where vehicle_canon=? and kind='jugaad'",
+                (cand["canon"],)) if (parsed := parse_date(row["date"])) and datetime.fromisoformat(parsed).date() <= t.date()]
+            if patches:
+                repairs = [(datetime.fromisoformat(parsed).date(), maintenance_component(row["notes"])) for row in con.execute(
+                    """select m.date, m.notes from maintenance m
+                       where vehicle_canon=?
+                         and exists (select 1 from maint_events e where e.maint_row=m.row and e.kind in ('repaired','replaced'))
+                         and not exists (select 1 from maint_events e where e.maint_row=m.row and e.kind in ('jugaad','permanent_fix_pending'))""",
+                    (cand["canon"],)) if (parsed := parse_date(row["date"])) and datetime.fromisoformat(parsed).date() < t.date()]
+                unresolved = [patch for patch in patches if patch[2] is None or not any(
+                    patch[0] < repair_date and component == patch[2] for repair_date, component in repairs)]
+                if unresolved and H.get(cand["home_hub"], {}).get("region") != H.get(ctx["destination"], {}).get("region"):
+                    patch_date, _, component = min(unresolved)
+                    deadline = patch_date + timedelta(days=v)
+                    state = "overdue since" if t.date() > deadline else "due by"
+                    return f"jugaad on {patch_date} ({component or 'unknown component'}), permanent repair {state} {deadline}, must stay in {H.get(cand['home_hub'], {}).get('region')}"
         if k == "not_last_issue_with_client":
-            row = con.execute("select ticket_id from tickets where vehicle_canon=? and client=? and created_at<? order by created_at desc limit 1", (cand["canon"], v, t.isoformat())).fetchone()
-            if row:
-                later = con.execute("select 1 from trips where vehicle_canon=? and client!=? and dispatch_time>? limit 1", (cand["canon"], v, t.isoformat())).fetchone()
-                if not later:
-                    return f"had issue on {v} run ({row['ticket_id']}), rotate"
+            current = event_key(t.isoformat(), 1, ctx["ticket_id"])
+            issues = {(row["ticket_id"], row["created_at"]) for row in con.execute(
+                "select ticket_id, created_at from tickets where vehicle_canon=? and client=?", (cand["canon"], v))}
+            issues.update((ticket_id, created_at) for ticket_id, created_at, vehicle, client in ctx.get("batch_issues", ())
+                          if vehicle == cand["canon"] and client == v)
+            prior = [(key, ticket_id) for ticket_id, created_at in issues
+                     if (key := event_key(created_at, 0, ticket_id)) and key < current]
+            if prior:
+                issue, issue_id = max(prior)
+                dispatches = [key for row in con.execute("select trip_id, dispatch_time from trips where vehicle_canon=? and status!='CANCELLED'", (cand["canon"],))
+                              if (key := event_key(row["dispatch_time"], 1, row["trip_id"]))]
+                dispatches += [key for row in con.execute("select ticket_id, created_at from work_orders where replacement=?", (cand["canon"],))
+                               if (key := event_key(row["created_at"], 1, row["ticket_id"]))]
+                if not any(issue < dispatch < current for dispatch in dispatches):
+                    return f"had issue on {v} run ({issue_id}), rotate"
     return None
 
 
@@ -156,11 +227,13 @@ create table if not exists alerts(key primary key, level, message, source_file, 
 
 
 def audit(con, ticket_id, seq, step, at, decision, data=None, rule_ids=(), by="code"):
+    ticket_id, step, at, decision, data, by = mask_data((ticket_id, step, at, decision, data or {}, by))
     con.execute("insert or ignore into audit values(?,?,?,?,?,?,?,?,?)",
-                (stable_id("AUD", ticket_id, seq, step), seq, ticket_id, step, at, decision, json.dumps(data or {}, ensure_ascii=False, sort_keys=True), ",".join(rule_ids), by))
+                (stable_id("AUD", ticket_id, seq, step), seq, ticket_id, step, at, decision, json.dumps(data, ensure_ascii=False, sort_keys=True), ",".join(rule_ids), by))
 
 
 def quarantine(con, rec, reason, detail, source_file, at):
+    rec, reason, detail, source_file, at = mask_data((rec, reason, detail, source_file, at))
     tid = str(rec.get("ticket_id") or stable_id("REC", json.dumps(rec, sort_keys=True, default=str)))
     con.execute("insert or ignore into quarantine values(?,?,?,?,?,?,?,0)",
                 (stable_id("Q", tid, reason), tid, source_file, reason, detail, json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str), at))
@@ -168,7 +241,8 @@ def quarantine(con, rec, reason, detail, source_file, at):
 
 
 # ---- per ticket -------------------------------------------------------------------------------
-def process(con, rec, source_file, seen):
+def process(con, rec, source_file, seen, log, batch_issues=()):
+    rec = mask_data(rec)
     t, unknown = map_record(rec)
     if not t:
         return quarantine(con, rec, "unrecognized_format", f"no known fields in {list(rec)[:6]}", source_file, "n/a")
@@ -179,17 +253,18 @@ def process(con, rec, source_file, seen):
         return quarantine(con, t | {"_unmapped": unknown} if unknown else t, "missing_field", f"missing {', '.join(m.replace('_', ' ') for m in missing)}", source_file, created or "n/a")
     if not created:
         return quarantine(con, t, "bad_date", f"cannot parse created_at={t.get('created_at')!r}", source_file, "n/a")
-    if tid in seen:
-        LOG.append({"event": "duplicate_skipped", "ticket_id": tid, "source": source_file})
-        return
-    seen.add(tid)
     vc = canon_vehicle(t["vehicle"])
     if not vc:
         return quarantine(con, t, "invalid_vehicle", f"vehicle {t['vehicle']!r} is not a registration number", source_file, created)
     if t["origin_hub"] not in H:
         return quarantine(con, t, "unknown_hub", f"origin_hub {t['origin_hub']!r} not in hubs.yaml", source_file, created)
+    if t.get("destination") and t["destination"] not in H:
+        return quarantine(con, t, "unknown_destination", f"destination {t['destination']!r} not in hubs.yaml", source_file, created)
+    if tid in seen:
+        log.append({"event": "duplicate_skipped", "ticket_id": tid, "source": source_file})
+        return
     if con.execute("select 1 from work_orders where ticket_id=?", (tid,)).fetchone():
-        LOG.append({"event": "already_processed", "ticket_id": tid})
+        log.append({"event": "already_processed", "ticket_id": tid})
         return
     dt = datetime.fromisoformat(created)
     client = canon_client(t.get("client"))
@@ -197,7 +272,7 @@ def process(con, rec, source_file, seen):
         client = llm.propose_match(str(t["client"]), list(CLIENT_ALIASES))
         if client:
             con.execute("insert or ignore into entity_map values('client',?,?,'llm')", (re.sub(r"[^a-z]", "", str(t["client"]).lower()), client))
-            LOG.append({"event": "client_match_proposed", "ticket_id": tid, "original": t["client"], "canon": client})
+            log.append({"event": "client_match_proposed", "ticket_id": tid, "original": t["client"], "canon": client})
     client = client or "Internal"
     con.execute("insert or ignore into tickets values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (tid, created, vc, t["vehicle"], t.get("driver_id"), t["origin_hub"], float(t.get("km_from_origin_hub") or 0), t.get("destination") or t["origin_hub"],
@@ -211,8 +286,8 @@ def process(con, rec, source_file, seen):
     drv = con.execute("select * from drivers where driver_id=?", (t.get("driver_id"),)).fetchone()
     tenure = (dt - datetime.fromisoformat(drv["joining_date"])).days / 30.4 if drv else None
     hist = con.execute("select m.date, m.notes, m.row, group_concat(e.kind) kinds from maintenance m left join maint_events e on e.maint_row=m.row where vehicle_canon=? and date<=? group by m.row order by date desc limit 5", (vc, dt.date().isoformat())).fetchall()
-    ctx = {"client": client, "destination": t.get("destination") or t["origin_hub"], "origin_hub": t["origin_hub"], "month": dt.month, "hour": dt.hour,
-           "km_from_origin_hub": float(t.get("km_from_origin_hub") or 0), "driver_tenure_months": tenure, "created": dt}
+    ctx = {"ticket_id": tid, "client": client, "destination": t.get("destination") or t["origin_hub"], "origin_hub": t["origin_hub"], "month": dt.month, "hour": dt.hour,
+           "km_from_origin_hub": float(t.get("km_from_origin_hub") or 0), "driver_tenure_months": tenure, "created": dt, "batch_issues": batch_issues}
     citations = [f"tickets: {source_file} {tid}"]
     if veh:
         citations.append(f"fleet_master.csv {veh['vehicle_id']} ({vc})")
@@ -299,6 +374,7 @@ def process(con, rec, source_file, seen):
                     (stable_id("MSG", tid), tid, recipient[0] if recipient else f"{client} dispatch desk", mask(body),
                      json.dumps({"why": why, "rules": applied + rules_hit, "severity": sev, "eta": eta.isoformat() if eta else None, "flags": flags}, ensure_ascii=False), json.dumps(citations, ensure_ascii=False), drafted_by))
         audit(con, tid, 6, STEPS[5], created, f"client message drafted for {client} by {drafted_by}, awaiting approval", {"recipient": recipient[0] if recipient else None}, applied + rules_hit, by="LLM" if drafted_by != "template" else "code")
+    seen.add(tid)
 
 
 def draft_body(client, vc, t, chosen, hub, eta, flags, params):
@@ -337,36 +413,40 @@ def why_text(t, client, chosen, hub, skipped, params, rules):
 # ---- projection --------------------------------------------------------------------------------
 def write_outputs(con):
     OUT.mkdir(exist_ok=True); AUDIT.mkdir(exist_ok=True)
-    def dump(path, rows):
-        with open(path, "w", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n")
-    dump(OUT / "work_orders.jsonl", [{"work_order_id": r["work_order_id"], "ticket_id": r["ticket_id"], "vehicle_reg": r["vehicle_reg"], "created_at": r["created_at"], "citations": json.loads(r["citations"]),
+    atomic_write_jsonls({
+        OUT / "work_orders.jsonl": [{"work_order_id": r["work_order_id"], "ticket_id": r["ticket_id"], "vehicle_reg": r["vehicle_reg"], "created_at": r["created_at"], "citations": json.loads(r["citations"]),
                                      "severity": r["severity"], "replacement": r["replacement"], "replacement_hub": r["replacement_hub"], "eta": r["eta"], "rules": r["rules_applied"].split(",") if r["rules_applied"] else [], "flags": json.loads(r["flags"])}
-                                    for r in con.execute("select * from work_orders order by ticket_id")])
-    dump(OUT / "comms_pending.jsonl", [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["body"], "context": json.loads(r["context"]), "citations": json.loads(r["citations"]), "drafted_by": r["drafted_by"]}
-                                       for r in con.execute("select * from comms where status='pending' order by ticket_id")])
-    dump(OUT / "comms_sent.jsonl", [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["edited_body"] or r["body"], "approved_by": r["approved_by"], "sent_at": r["sent_at"]}
-                                    for r in con.execute("select * from comms where status='sent' order by ticket_id")])
-    dump(OUT / "quarantine.jsonl", [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "source_file": r["source_file"], "record": json.loads(r["record"]), "alert": f"Ticket {r['ticket_id']} set aside: {r['detail']}"}
-                                    for r in con.execute("select * from quarantine where resubmitted=0 order by ticket_id, reason")])
-    dump(AUDIT / "audit.jsonl", [{"ticket_id": r["ticket_id"], "seq": r["seq"], "step": r["step"], "at": r["at"], "decision": r["decision"], "data": json.loads(r["data"]), "rule_ids": r["rule_ids"].split(",") if r["rule_ids"] else [], "by": r["by"]}
-                                 for r in con.execute("select * from audit order by ticket_id, seq, step")])
+                                    for r in con.execute("select * from work_orders order by ticket_id")],
+        OUT / "comms_pending.jsonl": [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["body"], "context": json.loads(r["context"]), "citations": json.loads(r["citations"]), "drafted_by": r["drafted_by"]}
+                                       for r in con.execute("select * from comms where status='pending' order by ticket_id")],
+        OUT / "comms_sent.jsonl": [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["edited_body"] or r["body"], "approved_by": r["approved_by"], "sent_at": r["sent_at"]}
+                                    for r in con.execute("select * from comms where status='sent' order by ticket_id")],
+        OUT / "quarantine.jsonl": [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "source_file": r["source_file"], "record": json.loads(r["record"]), "alert": f"Ticket {r['ticket_id']} set aside: {r['detail']}"}
+                                    for r in con.execute("select * from quarantine where resubmitted=0 order by ticket_id, reason")],
+        AUDIT / "audit.jsonl": [{"ticket_id": r["ticket_id"], "seq": r["seq"], "step": r["step"], "at": r["at"], "decision": r["decision"], "data": json.loads(r["data"]), "rule_ids": r["rule_ids"].split(",") if r["rule_ids"] else [], "by": r["by"]}
+                                 for r in con.execute("select * from audit order by ticket_id, seq, step")],
+    })
 
 
-LOG = []
+def write_run_log(source_file, events):
+    LOGS.mkdir(exist_ok=True)
+    atomic_write_jsonl(LOGS / "pipeline.jsonl", ({"file": source_file, **event} for event in events))
 
 
 def run(path):
     con = db()
     con.executescript(PIPE_SCHEMA)
-    source_file = Path(path).name
+    source_file = mask(Path(path).name)
+    log = []
     try:
         records = read_ticket_file(path)
     except Exception as e:
+        error = mask(str(e))
         con.execute("insert or ignore into alerts values(?,?,?,?,?,?)", (stable_id("ALERT", source_file, "unreadable"), "amber", f"File {source_file} could not be read ({type(e).__name__}). Nothing was changed.", source_file, 0, "n/a"))
         con.commit(); write_outputs(con)
-        return {"file": source_file, "error": str(e)}
+        log.append({"event": "unreadable", "error": error})
+        write_run_log(source_file, log)
+        return {"file": source_file, "error": error}
     mapped = [map_record(r)[0] for r in records if isinstance(r, dict)]
     recognised = sum(1 for m in mapped if all(f in m for f in REQUIRED))
     if records and recognised == 0:
@@ -375,24 +455,32 @@ def run(path):
         for r in records:
             quarantine(con, r if isinstance(r, dict) else {"raw": r}, "unrecognized_format", f"fields {list(r)[:6] if isinstance(r, dict) else type(r).__name__} did not map to the ticket schema", source_file, "n/a")
         con.commit(); write_outputs(con)
+        log.append({"event": "unrecognized_format", "records": len(records)})
+        write_run_log(source_file, log)
         return {"file": source_file, "records": len(records), "unrecognized": True}
+    records = sorted(records, key=record_order)
+    batch_issues = []
+    for rec in records:
+        mapped = map_record(rec)[0] if isinstance(rec, dict) else {}
+        valid = (all(str(mapped.get(field) or "").strip() for field in REQUIRED)
+                 and mapped.get("origin_hub") in H
+                 and (not mapped.get("destination") or mapped["destination"] in H))
+        if valid and (created := parse_date(mapped.get("created_at"))) and (vehicle := canon_vehicle(mapped.get("vehicle"))):
+            batch_issues.append((str(mapped.get("ticket_id") or ""), created, vehicle, canon_client(mapped.get("client")) or mapped.get("client") or "Internal"))
     seen = set()
     for rec in records:
         try:
             with con:
-                process(con, rec if isinstance(rec, dict) else {"raw": rec}, source_file, seen)
+                process(con, rec if isinstance(rec, dict) else {"raw": rec}, source_file, seen, log, batch_issues)
         except Exception as e:
-            LOG.append({"event": "exception", "ticket": str(rec)[:200], "error": repr(e), "trace": traceback.format_exc()[-800:]})
+            log.append(mask_data({"event": "exception", "ticket": str(rec)[:200], "error": repr(e), "trace": traceback.format_exc()[-800:]}))
             with con:
                 quarantine(con, rec if isinstance(rec, dict) else {"raw": rec}, "processing_error", f"{type(e).__name__}: {e}", source_file, "n/a")
     write_outputs(con)
-    LOGS.mkdir(exist_ok=True)
-    with open(LOGS / "pipeline.jsonl", "a", encoding="utf-8") as f:
-        for e in LOG:
-            f.write(json.dumps({"file": source_file, **e}, ensure_ascii=False) + "\n")
+    write_run_log(source_file, log)
     n = lambda q: con.execute(q).fetchone()[0]
     summary = {"file": source_file, "records": len(records), "work_orders": n("select count(*) from work_orders"), "pending": n("select count(*) from comms where status='pending'"),
-               "quarantined": n("select count(*) from quarantine where resubmitted=0"), "duplicates_skipped": sum(1 for e in LOG if e["event"] == "duplicate_skipped"), "exceptions": sum(1 for e in LOG if e["event"] == "exception")}
+               "quarantined": n("select count(*) from quarantine where resubmitted=0"), "duplicates_skipped": sum(1 for e in log if e["event"] == "duplicate_skipped"), "exceptions": sum(1 for e in log if e["event"] == "exception")}
     return summary
 
 

@@ -1,16 +1,25 @@
 """Load every source into store.sqlite with entity resolution, precedence, and PII masking at the boundary.
-Run: python ingest.py   (idempotent: rebuilds the store from scratch each time)
+Run: python ingest.py   (idempotent: rebuilds source data while preserving operational state)
 """
-import csv, json, re, sys
-from datetime import date
-from pathlib import Path
+import csv, json, re
 import openpyxl
-from common import BUNDLE, DB, db, mask, canon_vehicle, canon_client
+from common import BUNDLE, db, mask, canon_vehicle, canon_client
 import llm
 
 PRECEDENCE = ["fleet_master", "maintenance_log", "tickets", "emails", "transcript"]
 
 SCHEMA = """
+drop table if exists vehicles;
+drop table if exists vehicle_aliases;
+drop table if exists clients;
+drop table if exists client_aliases;
+drop table if exists drivers;
+drop table if exists trips;
+drop table if exists maintenance;
+drop table if exists maint_events;
+drop table if exists emails;
+drop table if exists transcript;
+drop table if exists facts;
 create table vehicles(canon primary key, vehicle_id, model, year int, bs_stage, engine_heater, home_hub, capacity_tonnes, status, last_service_date);
 create table vehicle_aliases(canon, original, source, ref);
 create table clients(canon primary key);
@@ -22,7 +31,7 @@ create table maint_events(maint_row, kind, extracted_by, detail);
 create table emails(thread, idx int, sender, recipient, date, subject, body, primary key(thread, idx));
 create table transcript(section int primary key, text);
 create table facts(entity, key, value, source, ref, won int, vs_source, vs_value);
-create table entity_map(kind, original primary key, canon, proposed_by);
+create table if not exists entity_map(kind, original primary key, canon, proposed_by);
 """
 
 HUB_WORDS = ["Delhi", "Gurgaon", "Jaipur", "Lucknow", "Chandigarh", "Ludhiana", "Ambala", "Kanpur", "Rudrapur",
@@ -161,10 +170,6 @@ def load_transcript(con):
 
 
 def main():
-    if DB.exists():
-        DB.unlink()
-    for suffix in ("-wal", "-shm"):
-        Path(str(DB) + suffix).unlink(missing_ok=True)
     con = db()
     con.executescript(SCHEMA)
     for c in ["Shakti Cement", "Vertex Retail", "Apex Chemicals", "Orion Pharma", "Internal"]:
