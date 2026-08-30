@@ -58,6 +58,7 @@ Without an `OPENAI_API_KEY` everything still runs. Drafts come from a template a
 | `server.py` | FastAPI over the store, serves `ui/dist` |
 | `ui/` | React + Vite + Tailwind console |
 | `tests/` | The invariants as pytest |
+| `llm_cache.sqlite` | Committed warm cache: a fresh clone reproduces the same drafts with no API call |
 | `surprise_test.json` | A queue in a different shape (camelCase, DD-MM-YYYY, epoch) to prove change tolerance |
 
 ## Architecture
