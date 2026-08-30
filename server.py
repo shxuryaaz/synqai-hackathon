@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yaml
-from common import ROOT, WORK, OUT, AUDIT, atomic_write_jsonl, db, mask, mask_data, has_pii, pretty_plate
+from common import ROOT, WORK, OUT, AUDIT, atomic_write_jsonl, db, mask, mask_data, has_pii, pretty_plate, stable_id
 import jwt
 import pipeline, approve as approve_mod, rerun_check, pii_scan, query as query_mod, persist
 
@@ -34,7 +34,7 @@ async def guard(request, call_next):
     return response
 
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 def ping():
     return {"ok": True}
 
@@ -71,7 +71,7 @@ def breakdown(w, t, c):
 @app.get("/api/stats")
 def stats():
     pending = rows("select count(*) n from comms where status='pending'")[0]["n"]
-    attention = rows("select count(*) n from quarantine where resubmitted=0")[0]["n"] + rows("select count(*) n from alerts")[0]["n"]
+    attention = rows("select count(*) n from quarantine where resubmitted=0 and reason!='unrecognized_format'")[0]["n"] + rows("select count(*) n from alerts")[0]["n"] + rows("select count(*) n from format_maps where status='proposed'")[0]["n"]
     return {"active": pending, "awaiting": pending, "attention": attention, "fleet": rows("select count(*) n from vehicles where status='Active'")[0]["n"], "rerun": meta("last_rerun_check")}
 
 
@@ -127,7 +127,35 @@ def attention():
     q = [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "record": json.loads(r["record"]), "source_file": r["source_file"],
           "missing": missing_fields(json.loads(r["record"]))}
          for r in rows("select * from quarantine where resubmitted=0 order by ticket_id")]
-    return {"quarantined": q, "alerts": rows("select * from alerts order by key")}
+    maps = [m | {"columns": json.loads(m["columns"]), "mapping": json.loads(m["mapping"]), "records": rows("select count(*) n from quarantine where source_file=? and resubmitted=0", m["source_file"])[0]["n"]}
+            for m in rows("select key, source_file, columns, mapping, status, proposed_at from format_maps where status='proposed' order by proposed_at")]
+    return {"quarantined": q, "alerts": rows("select * from alerts order by key"), "format_maps": maps}
+
+
+class FormatDecision(BaseModel):
+    key: str
+    by: str
+    approve: bool = True
+
+
+@app.post("/api/format-map")
+def decide_format(d: FormatDecision):
+    """Approve: the held file is processed through the mapping, its hold rows and alert cleared. Reject: stays held."""
+    con = db(); con.executescript(pipeline.PIPE_SCHEMA)
+    row = con.execute("select * from format_maps where key=? and status='proposed'", (d.key,)).fetchone()
+    if not row or not d.by.strip():
+        raise HTTPException(status_code=404 if not row else 422, detail="No pending mapping with that key" if not row else "Reviewer identity is required")
+    status = "approved" if d.approve else "rejected"
+    with con:
+        con.execute("update format_maps set status=?, approved_by=?, approved_at=? where key=?", (status, mask(d.by.strip()), datetime.now(timezone.utc).isoformat(timespec="seconds"), d.key))
+        pipeline.audit(con, d.key, 0, "Format mapping " + status, "n/a", f"{d.by.strip()} {status} the field mapping for {row['source_file']}", {"mapping": json.loads(row["mapping"])}, by="human")
+        if d.approve:
+            con.execute("update quarantine set resubmitted=1 where source_file=? and reason='unrecognized_format'", (row["source_file"],))
+            con.execute("delete from alerts where key=?", (stable_id("ALERT", row["source_file"], "format"),))
+    if not d.approve:
+        pipeline.write_outputs(con)
+        return {"result": "rejected"}
+    return {"result": "processed"} | pipeline.run(row["path"])
 
 
 class Resubmit(BaseModel):

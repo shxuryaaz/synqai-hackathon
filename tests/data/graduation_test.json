@@ -1,0 +1,80 @@
+[
+  {
+    "ref_no": "TKT-8201",
+    "logged_on": "03.01.2027 21:50",
+    "truck_plate": "hr 68 ts 2638",
+    "pilot_code": "DRV-021",
+    "base_station": "Gurgaon",
+    "distance_from_base": "26",
+    "going_to": "Noida",
+    "fault_report": "gearbox jam near toll, driver Advik ka contact +91 8361473242 hai",
+    "urgency": "High",
+    "customer": "Shakti Cements",
+    "current_state": "OPEN"
+  },
+  {
+    "ref_no": "TKT-8201",
+    "logged_on": "03.01.2027 21:50",
+    "truck_plate": "HR68TS2638",
+    "pilot_code": "DRV-021",
+    "base_station": "Gurgaon",
+    "distance_from_base": "26",
+    "going_to": "Noida",
+    "fault_report": "gearbox jam near toll, driver Advik ka contact +91 8361473242 hai",
+    "urgency": "High",
+    "customer": "Shakti Cement",
+    "current_state": "OPEN"
+  },
+  {
+    "ref_no": "TKT-8202",
+    "logged_on": "1767576600",
+    "truck_plate": "UP21YH6085",
+    "pilot_code": "DRV-004",
+    "base_station": "Lucknow",
+    "distance_from_base": "39",
+    "going_to": "Rudrapur",
+    "fault_report": "engine stall, cold start problem, aadhaar 7713 4912 7274 se verify",
+    "urgency": "high",
+    "customer": "ORION PHARMA",
+    "current_state": "OPEN"
+  },
+  {
+    "ref_no": "TKT-8203",
+    "logged_on": "2027-01-05T09:30:00",
+    "truck_plate": "CH-40-IK-6238",
+    "pilot_code": "DRV-031",
+    "base_station": "Chandigarh",
+    "distance_from_base": "14",
+    "going_to": "Rudrapur",
+    "fault_report": "AC compressor fir se smoke de raha hai, Guddu wala jugaad khul gaya, DL PB03 20137961578 pe claim",
+    "urgency": "Medium",
+    "customer": "Apex Chemicals",
+    "current_state": "OPEN"
+  },
+  {
+    "ref_no": "TKT-8204",
+    "logged_on": "sometime last night",
+    "truck_plate": "RJ57LG5374",
+    "pilot_code": "DRV-034",
+    "base_station": "Jaipur",
+    "distance_from_base": "88",
+    "going_to": "Gurgaon",
+    "fault_report": "fuel pump failure",
+    "urgency": "Low",
+    "customer": "Vertex Retail",
+    "current_state": "OPEN"
+  },
+  {
+    "ref_no": "TKT-8205",
+    "logged_on": "2027-01-06T16:45:00",
+    "truck_plate": null,
+    "pilot_code": "DRV-011",
+    "base_station": "Kanpur",
+    "distance_from_base": "7",
+    "going_to": "Delhi",
+    "fault_report": "brake failure warning light",
+    "urgency": "High",
+    "customer": "Internal",
+    "current_state": "OPEN"
+  }
+]

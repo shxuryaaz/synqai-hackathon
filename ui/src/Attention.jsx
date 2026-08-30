@@ -67,8 +67,32 @@ function ReviewAlert({ alert, related, onHistory }) {
   )
 }
 
+function FormatCard({ m, onChange }) {
+  const [by, setBy] = useState(() => { try { return localStorage.getItem('meridian-reviewer') || '' } catch { return '' } })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const decide = async (approve) => {
+    if (busy || !by.trim()) return
+    setBusy(true); setError(null)
+    try { await post('format-map', { key: m.key, by: by.trim(), approve }); await onChange() } catch (reason) { setError(reason) } finally { setBusy(false) }
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-4 rounded-3xl bg-card px-5 py-5">
+      <div className="flex gap-3"><span className="mt-0.5 text-gold"><Icon d={I.box} size={20} /></span><div><div className="text-[17px] font-semibold">New format detected in {safeSource(m.source_file)}</div><div className="text-[15px] text-sub">{m.records} records held. Proposed mapping to the ticket schema. Approve to process them.</div></div></div>
+      <div className="overflow-x-auto"><table className="w-full text-[15px]"><thead><tr className="text-left text-[12px] uppercase tracking-wider text-mute"><th className="py-1 pr-3">File column</th><th className="pr-3">Maps to</th><th>Confidence</th></tr></thead>
+        <tbody>{m.columns.map(c => { const x = m.mapping[c] || {}; const ok = x.target && x.confidence >= 0.7; return <tr key={c} className="border-t border-white/10"><td className="py-1.5 pr-3 font-mono text-[13px]">{c}</td><td className={`pr-3 ${ok ? '' : 'text-sub'}`}>{ok ? x.target : x.target ? `${x.target} (too low, dropped)` : 'not mapped'}</td><td className={ok ? 'text-grn' : 'text-amb'}>{Math.round((x.confidence || 0) * 100)}%</td></tr> })}</tbody></table></div>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex min-w-[240px] grow flex-col gap-1.5"><span className="text-sm font-medium text-sub">Reviewer identity</span><input value={by} onChange={e => setBy(e.target.value)} placeholder="Your name or shift identity" className="h-12 rounded-full bg-card2 px-4 text-base text-ink outline-none focus:ring-1 focus:ring-gold" /></label>
+        <Btn kind="green" onClick={() => decide(true)} disabled={busy || !by.trim()} className="h-12">{busy ? 'Working' : 'Approve mapping & process'}</Btn>
+        <Btn kind="outline" onClick={() => decide(false)} disabled={busy || !by.trim()} className="h-12">Reject</Btn>
+      </div>
+      {error && <ErrorState error={error} onRetry={() => decide(true)} title="The mapping decision did not go through." />}
+    </div>
+  )
+}
+
 export default function Attention({ tick, onHistory, onChange }) {
-  const [d, setD] = useState({ quarantined: [], alerts: [] })
+  const [d, setD] = useState({ quarantined: [], alerts: [], format_maps: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const latest = useRef(0)
@@ -91,13 +115,15 @@ export default function Attention({ tick, onHistory, onChange }) {
   }, [load, tick])
   if (loading) return <Loading label="Loading attention items" />
   if (error) return <ErrorState error={error} onRetry={load} title="Could not load attention items." />
-  if (d.quarantined.length + d.alerts.length === 0) return <Empty title="Nothing needs attention." sub="Every ticket was understood and every file was recognised." />
+  const held = d.quarantined.filter(q => q.reason !== 'unrecognized_format')
+  if (held.length + d.alerts.length + (d.format_maps?.length || 0) === 0) return <Empty title="Nothing needs attention." sub="Every ticket was understood and every file was recognised." />
   return (
     <div className="flex max-w-[960px] flex-col gap-7">
-      <div className="flex flex-col gap-3">
-        <div className="flex items-baseline justify-between"><h2 className="text-[21px] font-semibold tracking-tight">Set aside · {d.quarantined.length}</h2><span className="text-sm text-mute">Nothing was dispatched for these. Fill the gap and resubmit.</span></div>
-        {d.quarantined.map(q => <Quarantined key={q.ticket_id + q.reason} q={q} onHistory={onHistory} onChange={onChange} />)}
-      </div>
+      {d.format_maps?.length > 0 && <div className="flex flex-col gap-3"><h2 className="text-[21px] font-semibold tracking-tight">New formats · {d.format_maps.length}</h2>{d.format_maps.map(m => <FormatCard key={m.key} m={m} onChange={onChange} />)}</div>}
+      {held.length > 0 && <div className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between"><h2 className="text-[21px] font-semibold tracking-tight">Set aside · {held.length}</h2><span className="text-sm text-mute">Nothing was dispatched for these. Fill the gap and resubmit.</span></div>
+        {held.map(q => <Quarantined key={q.ticket_id + q.reason} q={q} onHistory={onHistory} onChange={onChange} />)}
+      </div>}
       {d.alerts.length > 0 && <div className="flex flex-col gap-3"><h2 className="text-[21px] font-semibold tracking-tight">System warnings · {d.alerts.length}</h2>
         {d.alerts.map(a => <ReviewAlert key={a.key} alert={a} related={d.quarantined.filter(q => q.source_file === a.source_file)} onHistory={onHistory} />)}
       </div>}

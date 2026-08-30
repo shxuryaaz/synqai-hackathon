@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { get, when } from './api'
-import { Card, CardTitle, Drawer, ErrorState, Icon, I, IconBtn, Loading, issueKind, kindIcon, statusText } from './ui'
+import { Btn, Card, CardTitle, Drawer, ErrorState, Icon, I, IconBtn, Loading, issueKind, kindIcon, statusText } from './ui'
 import { Detail } from './Approvals'
 import { Quarantined } from './Attention'
 
@@ -25,8 +25,10 @@ export function buildRows({ items }, { pending, sent }, { quarantined }) {
     const status = b.status === 'Awaiting approval' ? 'Waiting approval' : a?.status === 'sent' ? 'Approved' : 'Resolved'
     return { ...b, ...p, kind: issueKind(p.issue), replacement: rep, replacement_hub: repHub || b.replacement_hub, dest: body.dest, eta: body.eta, status, approval: a, why: a?.why || '' }
   })
-  const setAside = quarantined.map(q => ({ ticket_id: q.ticket_id, client: q.record.client || '—', truck: q.record.vehicle || '', origin: q.record.origin_hub || '', dest: q.record.destination || '', issue: q.record.issue || q.detail, kind: issueKind(q.record.issue), at: q.record.created_at, status: 'Set aside', quarantine: q, replacement: null, eta: '', summary: q.detail, severity: 'HIGH', point: null, rules: [] }))
-  return [...rows, ...setAside]
+  const files = {}; quarantined.filter(q => q.reason === 'unrecognized_format').forEach(q => { files[q.source_file] = (files[q.source_file] || 0) + 1 })
+  const heldFiles = Object.entries(files).map(([f, n]) => ({ ticket_id: f.split(/[\\/]/).pop(), client: `${n} records held`, truck: '', origin: '', dest: '', issue: 'New format, mapping awaits approval', kind: 'Other', at: '', status: 'Set aside', held: true, replacement: null, eta: '', summary: '', severity: 'HIGH', point: null, rules: [] }))
+  const setAside = quarantined.filter(q => q.reason !== 'unrecognized_format').map(q => ({ ticket_id: q.ticket_id, client: q.record.client || '—', truck: q.record.vehicle || '', origin: q.record.origin_hub || '', dest: q.record.destination || '', issue: q.record.issue || q.detail, kind: issueKind(q.record.issue), at: q.record.created_at, status: 'Set aside', quarantine: q, replacement: null, eta: '', summary: q.detail, severity: 'HIGH', point: null, rules: [] }))
+  return [...rows, ...setAside, ...heldFiles]
 }
 
 function Focus({ item }) {
@@ -109,14 +111,15 @@ export default function Dashboard({ tick, onHistory, onChange, filter, setFilter
   const stats = useMemo(() => {
     const kinds = {}; rows.forEach(r => { kinds[r.kind] = (kinds[r.kind] || 0) + 1 })
     const top = Object.entries(kinds).sort((x, y) => y[1] - x[1]).slice(0, 4)
-    const resolved = rows.filter(r => r.status === 'Resolved' || r.status === 'Approved').length
+    const real = rows.filter(r => !r.held)
+    const resolved = real.filter(r => r.status === 'Resolved' || r.status === 'Approved').length
     const fired = {}; rows.forEach(r => r.rules?.forEach(x => { fired[x.id] = (fired[x.id] || 0) + 1 }))
     const skipped = {}; rows.forEach(r => skippedBy(r.why).forEach(([id, n]) => { skipped[id] = (skipped[id] || 0) + n }))
     const topSkip = Object.entries(skipped).sort((x, y) => y[1] - x[1])
     const topFire = Object.entries(fired).sort((x, y) => y[1] - x[1])[0]
-    return { top, resolved, total: rows.length, fired, skipped: topSkip[0], topFire, interventions: Object.values(fired).reduce((s, n) => s + n, 0) }
+    return { top, resolved, total: real.length, fired, skipped: topSkip[0], topFire, interventions: Object.values(fired).reduce((s, n) => s + n, 0) }
   }, [rows])
-  const attention = d ? [['Quarantined', d.t.quarantined.length, 'Set aside', 'red', I.alert], ['Format warnings', d.t.alerts.length, 'audit', 'gold', I.box], ['Pending approvals', d.a.pending.length, 'Waiting approval', 'gold', I.inbox]] : []
+  const attention = d ? [['Quarantined', d.t.quarantined.filter(q => q.reason !== 'unrecognized_format').length, 'Set aside', 'red', I.alert], ['Format warnings', d.t.alerts.length + (d.t.format_maps?.length || 0), 'audit', 'gold', I.box], ['Pending approvals', d.a.pending.length, 'Waiting approval', 'gold', I.inbox]] : []
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase()
     const list = rows.filter(r => (filter === 'All' || r.status === filter) && (!needle || [r.ticket_id, r.truck, r.client, r.issue, r.origin, r.dest].join(' ').toLowerCase().includes(needle)))
@@ -206,7 +209,7 @@ export default function Dashboard({ tick, onHistory, onChange, filter, setFilter
     <>
       <div className="hidden gap-4 md:grid md:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">{left}<div className="flex min-w-0 flex-col gap-4">{map}{table}</div></div>
       <div className="flex flex-col gap-4 md:hidden">{mobileView === 'map' ? map : <>{filter === 'All' && left}{table}</>}</div>
-      {current && (current.status === 'Set aside'
+      {current && (current.held ? <Drawer title={current.ticket_id} sub={current.client} onClose={() => setOpenRow(null)}><div className="text-sub">A new file format was detected. Review and approve the field mapping in Audit.</div><Btn onClick={() => { setOpenRow(null); setFilter('audit') }} className="self-start">Open audit</Btn></Drawer> : current.status === 'Set aside'
         ? <Drawer title={`Ticket ${current.ticket_id} set aside`} sub={current.quarantine.detail} onClose={() => setOpenRow(null)}><Quarantined q={current.quarantine} onHistory={onHistory} onChange={done} bare /></Drawer>
         : current.approval
           ? <Drawer wide title={current.client} sub={`${current.issue} · ${current.truck}`} onClose={() => setOpenRow(null)}><Detail it={current.approval} onDone={done} onHistory={onHistory} bare /></Drawer>

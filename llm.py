@@ -3,7 +3,7 @@ Every call: hash(model+prompt+input) -> llm_cache.sqlite. Cache hit makes no API
 the caller falls back to its regex/template path and audits the degradation.
 Set MERIDIAN_LLM_FAKE=<counter file> to use a deterministic-per-call fake (tests). Unset OPENAI_API_KEY to force fallback.
 """
-import hashlib, json, os, sqlite3
+import hashlib, json, os, re, sqlite3
 from pathlib import Path
 from dotenv import load_dotenv
 from common import ROOT, WORK, has_pii, mask
@@ -25,6 +25,10 @@ def _call(model, system, user):
     if fake:
         n = int(Path(fake).read_text() or 0) + 1 if Path(fake).exists() else 1
         Path(fake).write_text(str(n))
+        if "field mapping" in system:   # ponytail: name heuristics so tests never need the network
+            cols = json.loads(user)["unknown"]
+            guess = lambda c: next((t for pat, t in [("reg|plate", "vehicle"), ("km|dist", "km_from_origin_hub"), ("ref|ticket", "ticket_id"), ("log|creat|date|time", "created_at"), ("pilot|driver", "driver_id"), ("base|hub", "origin_hub"), ("going|dest|to", "destination"), ("fault|issue|prob", "issue"), ("urg|sev|prio", "severity"), ("cust|client", "client"), ("state|status", "status")] if re.search(pat, c.lower())), None)
+            return json.dumps({"mapping": {c: {"target": guess(c), "confidence": 0.9 if guess(c) else 0.2} for c in cols}})
         return json.dumps({"kinds": ["repaired"]}) if "JSON" in system else f"FAKE DRAFT #{n}"
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("no OPENAI_API_KEY")
@@ -97,3 +101,18 @@ MATCH_SYS = "Map the given name to exactly one of the canonical names, or NONE. 
 def propose_match(name, canonicals):
     out = ask(EXTRACT_MODEL, MATCH_SYS, f"Name: {name}\nCanonical: {', '.join(canonicals)}")
     return out.strip() if out and out.strip() in canonicals else None
+
+
+MAP_SYS = ("You propose a field mapping from a client's ticket file to our ticket schema. Return JSON only: "
+           "{\"mapping\": {\"<column>\": {\"target\": <schema field or null>, \"confidence\": 0..1}}}. "
+           "Map every unknown column. Use null when nothing fits.")
+
+
+def propose_mapping(unknown, samples, targets):
+    """Column names + 2 masked sample rows -> {col: {target, confidence}} or None when the model is unavailable."""
+    out = ask(EXTRACT_MODEL, MAP_SYS, json.dumps({"unknown": unknown, "schema": targets, "samples": samples}, ensure_ascii=False, sort_keys=True))
+    try:
+        m = json.loads(out.strip().strip("`").removeprefix("json"))["mapping"]
+        return {c: {"target": (v.get("target") if v.get("target") in targets else None), "confidence": float(v.get("confidence") or 0)} for c, v in m.items() if c in unknown}
+    except Exception:
+        return None

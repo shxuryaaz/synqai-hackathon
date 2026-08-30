@@ -223,6 +223,7 @@ create table if not exists comms(message_id primary key, ticket_id unique, recip
 create table if not exists quarantine(key primary key, ticket_id, source_file, reason, detail, record, created_at, resubmitted int default 0);
 create table if not exists audit(key primary key, seq int, ticket_id, step, at, decision, data, rule_ids, by);
 create table if not exists alerts(key primary key, level, message, source_file, records int, created_at);
+create table if not exists format_maps(key primary key, source_file, path, columns, mapping, status, proposed_at, approved_by, approved_at);
 """
 
 
@@ -433,6 +434,31 @@ def write_run_log(source_file, events):
     atomic_write_jsonl(LOGS / "pipeline.jsonl", ({"file": source_file, **event} for event in events))
 
 
+MAP_MIN_CONFIDENCE = 0.7
+
+
+def format_gate(con, records, source_file, path):
+    """Unknown column set: alias match first, then one cached LLM proposal stored under the column-set hash.
+    Returns the approved mapping, or None (held safely) while it is proposed, rejected or the model is down."""
+    columns = sorted({str(k) for r in records for k in r})
+    key = stable_id("FMT", ",".join(columns))
+    row = con.execute("select mapping, status from format_maps where key=?", (key,)).fetchone()
+    if row:
+        return json.loads(row["mapping"]) if row["status"] == "approved" else None
+    known = {c: LOOKUP.get(snake(c)) or LOOKUP.get(snake(c).replace("_", "")) for c in columns}
+    unknown = [c for c, t in known.items() if not t]
+    proposal = llm.propose_mapping(unknown, mask_data(records[:2]), list(FIELD_MAP)) if unknown else {}
+    if proposal is None:
+        return None
+    mapping = {c: {"target": t, "confidence": 1.0} for c, t in known.items() if t} | proposal
+    con.execute("insert or ignore into format_maps values(?,?,?,?,?,?,?,?,?)", (key, source_file, str(path), json.dumps(columns), json.dumps(mapping), "proposed", datetime.now(timezone.utc).isoformat(timespec="seconds"), None, None))
+    return None
+
+
+def apply_mapping(rec, mapping):
+    return {m["target"]: v for k, v in rec.items() if (m := mapping.get(str(k))) and m["target"] and m["confidence"] >= MAP_MIN_CONFIDENCE}
+
+
 def run(path):
     con = db()
     con.executescript(PIPE_SCHEMA)
@@ -449,7 +475,10 @@ def run(path):
         return {"file": source_file, "error": error}
     mapped = [map_record(r)[0] for r in records if isinstance(r, dict)]
     recognised = sum(1 for m in mapped if all(f in m for f in REQUIRED))
-    if records and recognised == 0:
+    approved = format_gate(con, records, source_file, path) if records and recognised == 0 and all(isinstance(r, dict) for r in records) else None
+    if approved:
+        records = [apply_mapping(r, approved) for r in records]
+    elif records and recognised == 0:
         con.execute("insert or ignore into alerts values(?,?,?,?,?,?)", (stable_id("ALERT", source_file, "format"), "amber",
                     f"New ticket file received in an unrecognized format. Nothing was changed. {len(records)} records held safely.", source_file, len(records), "n/a"))
         for r in records:
