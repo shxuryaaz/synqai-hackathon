@@ -2,7 +2,7 @@
 import json, shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -127,13 +127,9 @@ def history(ticket_id: str):
     return {"ticket_id": ticket_id, "steps": steps, "rerun": meta("last_rerun_check")}
 
 
-class Run(BaseModel):
-    file: str | None = None
-
-
 @app.post("/api/run")
-def run(r: Run):
-    return pipeline.run(r.file or str(ROOT / "candidate_bundle" / "tickets.json"))
+def run():
+    return pipeline.run(str(ROOT / "candidate_bundle" / "tickets.json"))
 
 
 @app.post("/api/upload")
@@ -241,11 +237,17 @@ def global_graph():
 
 
 # Must stay last: catch-all for the SPA.
-DIST = ROOT / "ui" / "dist"
+DIST = (ROOT / "ui" / "dist").resolve()
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
 
     @app.get("/{path:path}")
     def spa(path: str):
-        f = DIST / path
-        return FileResponse(f if f.is_file() else DIST / "index.html")
+        f = (DIST / path).resolve()
+        if not f.is_relative_to(DIST):
+            raise HTTPException(status_code=404)
+        if not f.is_file():
+            f = (DIST / "index.html").resolve()
+            if not f.is_relative_to(DIST):
+                raise HTTPException(status_code=404)
+        return FileResponse(f)

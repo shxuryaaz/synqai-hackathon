@@ -12,5 +12,5 @@ uv run python rerun_check.py "${1:-candidate_bundle/tickets.json}"
 if [ -f server.py ]; then
   if [ -d ui ] && command -v npm >/dev/null; then (cd ui && npm install --silent && npm run build --silent); fi
   echo "Meridian Ops: http://localhost:8000"
-  uv run uvicorn server:app --host 0.0.0.0 --port 8000
+  uv run uvicorn server:app --host 127.0.0.1 --port 8000
 fi
