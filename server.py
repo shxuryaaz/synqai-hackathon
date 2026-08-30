@@ -30,7 +30,7 @@ async def guard(request, call_next):
             return JSONResponse({"detail": "Sign in required"}, status_code=401)
     response = await call_next(request)
     if request.method == "POST" and path.startswith("/api/") and response.status_code < 300:
-        persist.save()
+        persist.save_later()
     return response
 
 

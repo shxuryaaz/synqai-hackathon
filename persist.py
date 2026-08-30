@@ -1,6 +1,6 @@
 """Render free tier has no disk. Snapshot the whole SQLite store into Neon after every write and restore it at boot.
 ponytail: one bytea row (~4 MB); move the store to real Postgres if it passes ~50 MB."""
-import os, sqlite3
+import os, sqlite3, threading
 import psycopg
 from common import DB
 
@@ -23,9 +23,22 @@ def restore():
     return True
 
 
+_lock = threading.Lock()
+
+
+def save_later():
+    """Snapshot on a daemon thread so the API response is not held up; the lock serialises overlapping saves."""
+    threading.Thread(target=save, daemon=True).start()
+
+
 def save():
     if not URL or not DB.exists():
         return
+    with _lock:
+        _save()
+
+
+def _save():
     src = sqlite3.connect(DB)
     try:
         data = src.serialize()   # consistent copy, WAL included
