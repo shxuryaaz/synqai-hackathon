@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import yaml
 import llm
-from common import ROOT, OUT, AUDIT, LOGS, db, mask, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES
+from common import ROOT, OUT, AUDIT, LOGS, db, mask, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES, pretty_plate
 
 RULES = yaml.safe_load(open(ROOT / "rules.yaml"))
 HUBS = yaml.safe_load(open(ROOT / "hubs.yaml"))
@@ -176,7 +176,7 @@ def process(con, rec, source_file, seen):
     missing = [f for f in REQUIRED if not str(t.get(f) or "").strip()]
     created = parse_date(t.get("created_at"))
     if missing:
-        return quarantine(con, t | {"_unmapped": unknown} if unknown else t, "missing_field", f"missing {', '.join(missing)}", source_file, created or "n/a")
+        return quarantine(con, t | {"_unmapped": unknown} if unknown else t, "missing_field", f"missing {', '.join(m.replace('_', ' ') for m in missing)}", source_file, created or "n/a")
     if not created:
         return quarantine(con, t, "bad_date", f"cannot parse created_at={t.get('created_at')!r}", source_file, "n/a")
     if tid in seen:
@@ -285,8 +285,8 @@ def process(con, rec, source_file, seen):
     if client == "Internal":
         audit(con, tid, 6, STEPS[5], created, "internal ticket, no client message", {})
     else:
-        facts = {"client": client, "truck": vc, "route": f"{t['origin_hub']} to {ctx['destination']}", "fault": t.get("issue"), "km_from_hub": int(ctx["km_from_origin_hub"]),
-                 "replacement": chosen["canon"] if chosen else None, "replacement_hub": chosen_hub, "revised_delivery": eta.strftime("%d %b %H:%M") if eta else None,
+        facts = {"client": client, "truck": pretty_plate(vc), "route": f"{t['origin_hub']} to {ctx['destination']}", "fault": t.get("issue"), "km_from_hub": int(ctx["km_from_origin_hub"]),
+                 "replacement": pretty_plate(chosen["canon"]) if chosen else None, "replacement_hub": chosen_hub, "revised_delivery": eta.strftime("%d %b %H:%M") if eta else None,
                  "notes": flags + (["ETA includes monsoon allowance"] if params.get("eta_pad", 1) > 1 else []), "hub_desk": t["origin_hub"]}
         body = llm.draft(facts)
         drafted_by = DRAFT_BY if body else "template"

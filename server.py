@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yaml
-from common import ROOT, WORK, OUT, AUDIT, db, mask, has_pii
+from common import ROOT, WORK, OUT, AUDIT, db, mask, has_pii, pretty_plate
 import pipeline, approve as approve_mod, rerun_check, pii_scan, query as query_mod
 
 app = FastAPI(title="Meridian Ops")
@@ -33,8 +33,8 @@ def breakdown(w, t, c):
     point = pipeline.breakdown_point(t["origin_hub"], t["destination"], t["km_from_origin_hub"])
     status = "Quarantined" if not w else ("Resolved" if c and c["status"] == "sent" else ("Awaiting approval" if c else "Resolved"))
     return {"ticket_id": t["ticket_id"], "severity": w["severity"] if w else "HIGH", "status": status, "at": t["created_at"], "client": t["client"],
-            "summary": f"Truck {t['vehicle_original']} broke down {int(t['km_from_origin_hub'])} km from {t['origin_hub']}, {t['issue']}",
-            "replacement_line": f"Replacement {w['replacement']} dispatched from {w['replacement_hub']} hub" if w and w["replacement"] else "No eligible replacement found, needs a manual decision",
+            "summary": f"Truck {pretty_plate(t['vehicle_canon'])} broke down {int(t['km_from_origin_hub'])} km from {t['origin_hub']}, {t['issue']}",
+            "replacement_line": f"Replacement {pretty_plate(w['replacement'])} dispatched from {w['replacement_hub']} hub" if w and w["replacement"] else "No eligible replacement found, needs a manual decision",
             "point": point, "hub": H.get(w["replacement_hub"]) if w and w["replacement_hub"] else None, "replacement_hub": w["replacement_hub"] if w else None,
             "rules": chips([r for r in (w["rules_applied"] or "").split(",") if r]) if w else [], "flags": json.loads(w["flags"]) if w else []}
 
@@ -56,11 +56,11 @@ def breakdowns():
 @app.get("/api/approvals")
 def approvals():
     items = []
-    for c in rows("select c.*, t.vehicle_original, t.origin_hub, t.destination, t.issue, t.created_at, t.client from comms c join tickets t using(ticket_id) order by t.created_at desc"):
+    for c in rows("select c.*, t.vehicle_canon, t.origin_hub, t.destination, t.issue, t.created_at, t.client from comms c join tickets t using(ticket_id) order by t.created_at desc"):
         ctx = json.loads(c["context"])
         items.append({"ticket_id": c["ticket_id"], "client": c["client"], "status": c["status"], "recipient": c["recipient"], "body": c["edited_body"] or c["body"], "drafted_by": c["drafted_by"],
-                      "summary": f"{c['issue']} on {c['vehicle_original']}, {c['origin_hub']} to {c['destination']}", "why": ctx["why"], "rules": chips(ctx["rules"]), "flags": ctx.get("flags", []),
-                      "based_on": json.loads(c["citations"]), "at": c["created_at"], "approved_by": c["approved_by"], "sent_at": c["sent_at"], "vehicle": c["vehicle_original"]})
+                      "summary": f"{c['issue']} on {pretty_plate(c['vehicle_canon'])}, {c['origin_hub']} to {c['destination']}", "why": ctx["why"], "rules": chips(ctx["rules"]), "flags": ctx.get("flags", []),
+                      "based_on": json.loads(c["citations"]), "at": c["created_at"], "approved_by": c["approved_by"], "sent_at": c["sent_at"], "vehicle": pretty_plate(c["vehicle_canon"])})
     return {"pending": [i for i in items if i["status"] == "pending"], "sent": [i for i in items if i["status"] == "sent"]}
 
 
@@ -75,10 +75,23 @@ def do_approve(a: Approve):
     return approve_mod.approve(a.ticket_id, a.by, a.body)
 
 
+def missing_fields(rec):
+    """Every field the dispatcher must supply before this record can pass validation."""
+    from common import canon_vehicle
+    out = [f for f in pipeline.REQUIRED if not str(rec.get(f) or "").strip()]
+    if "vehicle" not in out and not canon_vehicle(rec.get("vehicle")):
+        out.append("vehicle")
+    if "created_at" not in out and not pipeline.parse_date(rec.get("created_at")):
+        out.append("created_at")
+    if rec.get("origin_hub") and rec["origin_hub"] not in H and "origin_hub" not in out:
+        out.append("origin_hub")
+    return out or ["vehicle"]
+
+
 @app.get("/api/attention")
 def attention():
     q = [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "record": json.loads(r["record"]), "source_file": r["source_file"],
-          "missing": [f for f in pipeline.REQUIRED if not str(json.loads(r["record"]).get(f) or "").strip()] or ["vehicle"]}
+          "missing": missing_fields(json.loads(r["record"]))}
          for r in rows("select * from quarantine where resubmitted=0 order by ticket_id")]
     return {"quarantined": q, "alerts": rows("select * from alerts order by key")}
 

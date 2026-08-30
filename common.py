@@ -41,6 +41,12 @@ def canon_vehicle(s):
     return c if PLATE.match(c) else None
 
 
+def pretty_plate(canon):
+    """CH40IK6238 -> CH-40-IK-6238 for display."""
+    m = re.match(r"^([A-Z]{2})(\d{2})([A-Z]{1,2})(\d{4})$", canon or "")
+    return "-".join(m.groups()) if m else canon
+
+
 def canon_client(s):
     if not s:
         return None
