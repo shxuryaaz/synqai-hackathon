@@ -65,7 +65,7 @@ export default function App() {
   const rr = stats?.rerun
 
   return (
-    <div className="min-h-screen pb-24 md:pb-0">
+    <div className="min-h-screen pb-36 md:pb-0">
       <header className="border-b border-line bg-white px-4 md:px-8">
         <input ref={file} type="file" accept=".json,.jsonl,.csv" className="hidden" onChange={onFile} />
         <div className="flex h-auto flex-col gap-3 py-3 lg:h-[72px] lg:flex-row lg:items-center lg:justify-between lg:py-0">
