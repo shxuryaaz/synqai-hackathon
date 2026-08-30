@@ -1,6 +1,6 @@
 // Small shared pieces. Colors are status-only: red/amber/green never decorate.
 export const Icon = ({ d, size = 18, sw = 2, ...p }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" {...p}>{d}</svg>
+  <svg aria-hidden="true" focusable="false" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" {...p}>{d}</svg>
 )
 export const I = {
   play: <path d="M6 4l14 8-14 8z" />, check: <path d="M5 12l5 5 9-10" />, send: <><path d="M22 2L11 13" /><path d="M22 2l-7 20-4-9-9-4z" /></>,
@@ -12,7 +12,7 @@ export const I = {
 }
 const tone = { red: 'bg-red-soft text-red border-red/15', amb: 'bg-amb-soft text-amb border-amb/15', grn: 'bg-grn-soft text-grn border-grn/15', gray: 'bg-[#f1f2f5] text-sub border-line' }
 export const Pill = ({ n, label, t }) => (
-  <div className={`flex items-center gap-2.5 rounded-full border px-4 py-2 ${tone[t]}`}><span className="text-xl font-semibold leading-none">{n}</span><span className="text-sm font-medium text-sub">{label}</span></div>
+  <div className={`flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-2 sm:gap-2.5 sm:px-4 ${tone[t]}`}><span className="text-lg font-semibold leading-none sm:text-xl">{n}</span><span className="truncate text-xs font-medium text-sub sm:text-sm">{label}</span></div>
 )
 export const Chip = ({ children, t = 'gray' }) => <span className={`inline-flex h-7 items-center rounded-full px-3 text-sm font-medium ${tone[t]}`}>{children}</span>
 export const statusTone = (s) => ({ Resolved: 'grn', 'Awaiting approval': 'amb', Quarantined: 'red' }[s] || 'gray')
@@ -27,6 +27,13 @@ export const Empty = ({ title, sub }) => (
   <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-[#cdd1d9] bg-white px-8 py-12 text-center">
     <div className="flex h-14 w-14 items-center justify-center rounded-full bg-grn-soft text-grn"><Icon d={I.check} size={28} sw={2.5} /></div>
     <div className="text-xl font-semibold">{title}</div><div className="text-sub">{sub}</div>
+  </div>
+)
+export const Loading = ({ label = 'Loading' }) => <div role="status" className="rounded-xl border border-line bg-white px-5 py-8 text-center text-sub">{label}</div>
+export const ErrorState = ({ error, onRetry, title = 'Could not load this view.' }) => (
+  <div role="alert" className="flex flex-col items-start gap-3 rounded-xl border border-red-200 bg-red-soft px-5 py-5 text-red">
+    <div><div className="font-semibold">{title}</div><div className="mt-1 break-words text-sm">{error?.message || 'The request failed.'}</div></div>
+    {onRetry && <Btn kind="outline" onClick={onRetry} className="h-10">Try again</Btn>}
   </div>
 )
 export const Section = ({ children }) => <div className="text-[13px] font-semibold uppercase tracking-[0.06em] text-mute">{children}</div>
