@@ -1,5 +1,5 @@
 // Cache the shell, network-first for the API.
-const SHELL = 'meridian-shell-v2';
+const SHELL = 'meridian-shell-v3';
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(SHELL).then(c => c.addAll(['/', '/manifest.json', '/icon.svg']))); });
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== SHELL).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {
