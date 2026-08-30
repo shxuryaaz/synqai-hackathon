@@ -161,3 +161,5 @@ Pieces 1, 2, and 3 can run together. Piece 4 follows 2. Piece 5 follows 1 and 4.
 
 [Reviewer] Plan approved.
 Watch that only the winning approval transaction writes its audit row and projects JSONL.
+
+[Reviewer] Final acceptance passes. All audited scope is covered, with 58 tests and frontend checks passing without material scope creep.
