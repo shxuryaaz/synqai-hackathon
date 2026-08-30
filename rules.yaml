@@ -1,0 +1,66 @@
+# Rajender's rules as data. `when` predicates test the ticket context; `require` predicates test a replacement
+# candidate; `effect` sets planning parameters. The engine (pipeline.py) evaluates these, never hardcodes them.
+rules:
+  - id: R1
+    description: Shakti Cement is planned to a 36-hour SLA, not the contractual 48.
+    citation: "dispatcher_interview.txt, clients: 'Shakti is a 36 hour client. Plan everything to 36.'"
+    when: {client: Shakti Cement}
+    effect: {sla_hours: 36}
+  - id: R2
+    description: October to February no BS4 vehicle on any route touching Delhi, Gurgaon, Faridabad or Noida.
+    citation: "dispatcher_interview.txt, routes: 'October to February, no BS4 vehicle goes on any Delhi NCR route.'"
+    when: {months: [10, 11, 12, 1, 2], route_touches_ncr: true}
+    require: {bs_stage: BS6}
+  - id: R3
+    description: Breakdown within 50 km of the origin hub, the origin hub sends the replacement. Beyond 50 km, nearest hub with an eligible vehicle.
+    citation: "dispatcher_interview.txt, breakdowns: 'Within 50 km, origin hub sends. Beyond 50 km, nearest hub with an eligible vehicle.'"
+    when: {km_from_origin_lte: 50}
+    effect: {replacement_hub: origin}
+  - id: R4
+    description: Hill routes (Rudrapur, Nainital side) November to February need an engine heater and no brake work in the last 30 days.
+    citation: "dispatcher_interview.txt, hill routes: 'must have an engine heater' and 'no vehicle on a hill route if it has had any brake work in the last thirty days.'"
+    when: {months: [11, 12, 1, 2], dest_hill: true}
+    require: {engine_heater: "Yes", no_brake_work_days: 30}
+  - id: R5
+    description: Service overdue by more than 30 days grounds the vehicle. No emergency exception.
+    citation: "dispatcher_interview.txt, breakdowns: 'more than 30 days past its due service date is grounded. It does not move.'"
+    when: {}
+    require: {service_overdue_days_lte: 30}
+  - id: R6
+    description: A jugaad or temporary fix starts a 7-day permanent-repair clock. Until repaired the vehicle stays in its home region.
+    citation: "dispatcher_interview.txt, Guddu ka jugaad: 'every jugaad of his is a seven day clock ... that vehicle does not leave its home region.'"
+    when: {}
+    require: {jugaad_stays_home: 7}
+  - id: R7
+    description: Orion Pharma gets vehicles from 2020 or later, and loads never wait overnight unrefrigerated at a hub.
+    citation: "dispatcher_interview.txt, clients: 'their consignments always get the newest available vehicle, 2020 or later.'"
+    when: {client: Orion Pharma}
+    require: {year_gte: 2020}
+    effect: {no_overnight_hold: true}
+  - id: R8
+    description: Vertex Retail's Ludhiana gate closes at 18:00. A late arrival is held and delivered 08:00 next morning, never marked failed.
+    citation: "dispatcher_interview.txt, clients: 'stops accepting after 6 pm ... deliver next morning at 8 ... never marked as a failed delivery.'"
+    when: {client: Vertex Retail, destination: Ludhiana}
+    effect: {gate_close_hour: 18, gate_open_hour: 8}
+  - id: R9
+    description: A vehicle with any issue on an Apex Chemicals run does not go back to Apex on the very next dispatch.
+    citation: "dispatcher_interview.txt, clients: 'that same truck does not go back to Apex on the very next dispatch.'"
+    when: {client: Apex Chemicals}
+    require: {not_last_issue_with_client: Apex Chemicals}
+  - id: R10
+    description: Monsoon (July to September) on routes east of Lucknow pads every ETA by 20 percent and quotes the padded number.
+    citation: "dispatcher_interview.txt, monsoon: 'add twenty percent to whatever time the computer says ... quote the padded number upfront.'"
+    when: {months: [7, 8, 9], dest_east_of_lucknow: true}
+    effect: {eta_pad: 1.2}
+  - id: R11
+    description: Drivers with under 6 months tenure never go solo on a night run.
+    citation: "dispatcher_interview.txt, drivers: 'less than six months with us, never go solo on a night run.'"
+    when: {night_run: true, driver_tenure_months_lt: 6}
+    effect: {pair_driver: true}
+
+# Severity from the issue text. The ticket's own severity is kept as reported_severity for comparison.
+severity:
+  HIGH: [brake, fuel, engine, steering, fire, axle, accident]
+  MEDIUM: [clutch, gearbox, suspension, tyre, overheat, radiator, turbo, alternator, battery]
+  LOW: []
+escalate_for_clients: [Shakti Cement, Orion Pharma]   # one level up, their SLA has no slack
