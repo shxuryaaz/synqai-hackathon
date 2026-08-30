@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import yaml
 import llm
-from common import ROOT, OUT, AUDIT, LOGS, atomic_write_jsonl, db, mask, mask_data, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES, pretty_plate
+from common import ROOT, OUT, AUDIT, LOGS, atomic_write_jsonl, atomic_write_jsonls, db, mask, mask_data, canon_vehicle, canon_client, stable_id, CLIENT_ALIASES, pretty_plate
 
 RULES = yaml.safe_load(open(ROOT / "rules.yaml"))
 HUBS = yaml.safe_load(open(ROOT / "hubs.yaml"))
@@ -413,17 +413,19 @@ def why_text(t, client, chosen, hub, skipped, params, rules):
 # ---- projection --------------------------------------------------------------------------------
 def write_outputs(con):
     OUT.mkdir(exist_ok=True); AUDIT.mkdir(exist_ok=True)
-    atomic_write_jsonl(OUT / "work_orders.jsonl", [{"work_order_id": r["work_order_id"], "ticket_id": r["ticket_id"], "vehicle_reg": r["vehicle_reg"], "created_at": r["created_at"], "citations": json.loads(r["citations"]),
-                                                   "severity": r["severity"], "replacement": r["replacement"], "replacement_hub": r["replacement_hub"], "eta": r["eta"], "rules": r["rules_applied"].split(",") if r["rules_applied"] else [], "flags": json.loads(r["flags"])}
-                                                  for r in con.execute("select * from work_orders order by ticket_id")])
-    atomic_write_jsonl(OUT / "comms_pending.jsonl", [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["body"], "context": json.loads(r["context"]), "citations": json.loads(r["citations"]), "drafted_by": r["drafted_by"]}
-                                                     for r in con.execute("select * from comms where status='pending' order by ticket_id")])
-    atomic_write_jsonl(OUT / "comms_sent.jsonl", [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["edited_body"] or r["body"], "approved_by": r["approved_by"], "sent_at": r["sent_at"]}
-                                                  for r in con.execute("select * from comms where status='sent' order by ticket_id")])
-    atomic_write_jsonl(OUT / "quarantine.jsonl", [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "source_file": r["source_file"], "record": json.loads(r["record"]), "alert": f"Ticket {r['ticket_id']} set aside: {r['detail']}"}
-                                                  for r in con.execute("select * from quarantine where resubmitted=0 order by ticket_id, reason")])
-    atomic_write_jsonl(AUDIT / "audit.jsonl", [{"ticket_id": r["ticket_id"], "seq": r["seq"], "step": r["step"], "at": r["at"], "decision": r["decision"], "data": json.loads(r["data"]), "rule_ids": r["rule_ids"].split(",") if r["rule_ids"] else [], "by": r["by"]}
-                                               for r in con.execute("select * from audit order by ticket_id, seq, step")])
+    atomic_write_jsonls({
+        OUT / "work_orders.jsonl": [{"work_order_id": r["work_order_id"], "ticket_id": r["ticket_id"], "vehicle_reg": r["vehicle_reg"], "created_at": r["created_at"], "citations": json.loads(r["citations"]),
+                                     "severity": r["severity"], "replacement": r["replacement"], "replacement_hub": r["replacement_hub"], "eta": r["eta"], "rules": r["rules_applied"].split(",") if r["rules_applied"] else [], "flags": json.loads(r["flags"])}
+                                    for r in con.execute("select * from work_orders order by ticket_id")],
+        OUT / "comms_pending.jsonl": [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["body"], "context": json.loads(r["context"]), "citations": json.loads(r["citations"]), "drafted_by": r["drafted_by"]}
+                                       for r in con.execute("select * from comms where status='pending' order by ticket_id")],
+        OUT / "comms_sent.jsonl": [{"message_id": r["message_id"], "ticket_id": r["ticket_id"], "recipient": r["recipient"], "body": r["edited_body"] or r["body"], "approved_by": r["approved_by"], "sent_at": r["sent_at"]}
+                                    for r in con.execute("select * from comms where status='sent' order by ticket_id")],
+        OUT / "quarantine.jsonl": [{"ticket_id": r["ticket_id"], "reason": r["reason"], "detail": r["detail"], "source_file": r["source_file"], "record": json.loads(r["record"]), "alert": f"Ticket {r['ticket_id']} set aside: {r['detail']}"}
+                                    for r in con.execute("select * from quarantine where resubmitted=0 order by ticket_id, reason")],
+        AUDIT / "audit.jsonl": [{"ticket_id": r["ticket_id"], "seq": r["seq"], "step": r["step"], "at": r["at"], "decision": r["decision"], "data": json.loads(r["data"]), "rule_ids": r["rule_ids"].split(",") if r["rule_ids"] else [], "by": r["by"]}
+                                 for r in con.execute("select * from audit order by ticket_id, seq, step")],
+    })
 
 
 def write_run_log(source_file, events):

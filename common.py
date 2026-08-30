@@ -94,19 +94,92 @@ def db():
     return con
 
 
-def atomic_write_jsonl(path, rows, sanitize=True):
-    """Replace a JSONL file only after its complete replacement is durable."""
+def _stage_file(path, mode, write):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = None
     try:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+        with tempfile.NamedTemporaryFile(mode, encoding="utf-8" if "b" not in mode else None, dir=path.parent,
                                          prefix=f".{path.name}.", suffix=".tmp", delete=False) as f:
             temp = Path(f.name)
-            for row in rows:
-                f.write(json.dumps(mask_data(row) if sanitize else row, ensure_ascii=False, sort_keys=True) + "\n")
+            write(f)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp, path)
-    finally:
+        return temp
+    except Exception as stage_error:
         if temp:
-            temp.unlink(missing_ok=True)
+            try:
+                temp.unlink(missing_ok=True)
+            except Exception as cleanup_error:
+                cleanup_error.add_note(f"failed to clean staged file {temp}")
+                raise ExceptionGroup("staging and cleanup failed", [stage_error, cleanup_error])
+        raise
+
+
+def atomic_write_jsonls(writes, sanitize=True):
+    """Stage and replace a set of JSONL files, restoring every destination if replacement fails."""
+    staged = []
+    preserved_backups = set()
+    failure = None
+    try:
+        for target, rows in writes.items():
+            target = Path(target)
+
+            def write_jsonl(f):
+                for row in rows:
+                    f.write(json.dumps(mask_data(row) if sanitize else row, ensure_ascii=False, sort_keys=True) + "\n")
+
+            replacement = _stage_file(target, "w", write_jsonl)
+            staged.append([target, replacement, None])
+        for item in staged:
+            if item[0].exists():
+                item[2] = _stage_file(item[0], "wb", lambda f, target=item[0]: f.write(target.read_bytes()))
+        replaced = []
+        try:
+            for item in staged:
+                os.replace(item[1], item[0])
+                item[1] = None
+                replaced.append(item)
+        except Exception as replacement_error:
+            restore_errors = []
+            for item in reversed(replaced):
+                try:
+                    if item[2]:
+                        os.replace(item[2], item[0])
+                        item[2] = None
+                    else:
+                        item[0].unlink(missing_ok=True)
+                except Exception as error:
+                    if item[2]:
+                        preserved_backups.add(item[2])
+                        detail = f"failed to restore {item[0]}; prior bytes preserved at {item[2]}: {error}"
+                    else:
+                        detail = f"failed to remove newly created {item[0]} during recovery: {error}"
+                    restore_errors.append(RuntimeError(detail))
+            if restore_errors:
+                failure = ExceptionGroup("projection failed and recovery was incomplete",
+                                         [replacement_error, *restore_errors])
+            else:
+                failure = replacement_error
+    except Exception as error:
+        failure = error
+
+    cleanup_errors = []
+    for _, replacement, backup in staged:
+        for path in (replacement, backup):
+            if path and path not in preserved_backups:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception as error:
+                    error.add_note(f"failed to clean staged file {path}")
+                    cleanup_errors.append(error)
+    if cleanup_errors:
+        active_errors = list(failure.exceptions) if isinstance(failure, ExceptionGroup) else ([failure] if failure else [])
+        errors = active_errors + cleanup_errors
+        raise ExceptionGroup("projection and cleanup failed" if failure else "projection cleanup failed", errors)
+    if failure:
+        raise failure
+
+
+def atomic_write_jsonl(path, rows, sanitize=True):
+    """Replace one JSONL file only after its complete replacement is durable."""
+    atomic_write_jsonls({path: rows}, sanitize)

@@ -72,7 +72,12 @@ class Approve(BaseModel):
 
 @app.post("/api/approve")
 def do_approve(a: Approve):
-    return approve_mod.approve(a.ticket_id, a.by, a.body)
+    try:
+        return approve_mod.approve(a.ticket_id, a.by, a.body)
+    except approve_mod.ApprovalConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except approve_mod.ApprovalValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 def missing_fields(rec):
