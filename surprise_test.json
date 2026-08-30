@@ -1,0 +1,6 @@
+{"tickets": [
+  {"ticketId": "TKT-2001", "reportedAt": "19-08-2026 07:45", "vehicleReg": "hr 16 sp 9238", "driverId": "DRV-010", "originHub": "Gurgaon", "distanceKm": "35", "destinationHub": "Delhi", "problem": "brake failure", "priority": "high", "customer": "Shakti Cement Ltd", "state": "open"},
+  {"ticketId": "TKT-2002", "reportedAt": 1755600000, "vehicleReg": "UP-40-IM-3144", "driverId": "DRV-020", "originHub": "Lucknow", "distanceKm": 120, "destinationHub": "Kanpur", "problem": "tyre burst", "priority": "medium", "customer": "Orion", "state": "open"},
+  {"ticketId": "TKT-2001", "reportedAt": "19-08-2026 07:45", "vehicleReg": "HR16SP9238", "driverId": "DRV-010", "originHub": "Gurgaon", "distanceKm": "35", "destinationHub": "Delhi", "problem": "brake failure", "priority": "high", "customer": "Shakti Cement Ltd", "state": "open"},
+  {"ticketId": "TKT-2003", "reportedAt": "20/08/2026", "vehicleReg": "", "driverId": "DRV-002", "originHub": "Ludhiana", "distanceKm": 8, "destinationHub": "Ludhiana", "problem": "engine overheating", "priority": "high", "customer": "Vertex", "state": "open"}
+]}

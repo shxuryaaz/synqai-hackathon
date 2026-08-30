@@ -4,10 +4,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 BUNDLE = ROOT / "candidate_bundle"
-DB = ROOT / "store.sqlite"
-OUT = ROOT / "outputs"
-AUDIT = ROOT / "audit"
-LOGS = ROOT / "logs"
+WORK = Path(os.environ.get("MERIDIAN_WORK", ROOT))  # tests point this at a temp dir
+DB = WORK / "store.sqlite"
+OUT = WORK / "outputs"
+AUDIT = WORK / "audit"
+LOGS = WORK / "logs"
 
 # PII patterns. Lookarounds instead of \b so 10-digit runs inside long ids (trip ids) don't match.
 PHONE = re.compile(r"(?:\+91[\s-]?)?(?<!\d)[6-9]\d{4}[\s-]?\d{5}(?!\d)")
