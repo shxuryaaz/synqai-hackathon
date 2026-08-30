@@ -190,6 +190,57 @@ def random_ticket():
     return history(pick) if pick else {"steps": []}
 
 
+# ---- knowledge graph ------------------------------------------------------------------------------
+@app.get("/api/graph/{ticket_id}")
+def ticket_graph(ticket_id: str):
+    t = (rows("select * from tickets where ticket_id=?", ticket_id) or [None])[0]
+    if not t:
+        return {"nodes": [], "edges": []}
+    w = (rows("select * from work_orders where ticket_id=?", ticket_id) or [None])[0]
+    nodes, edges = [{"id": ticket_id, "kind": "ticket", "label": f"{ticket_id}\n{t['issue']}"}], []
+    add = lambda i, k, l: nodes.append({"id": i, "kind": k, "label": l})
+    v = t["vehicle_canon"]; veh = (rows("select * from vehicles where canon=?", v) or [None])[0]
+    add(v, "vehicle", f"{pretty_plate(v)}\n{veh['model'] + ' ' + str(veh['year']) + ' ' + veh['bs_stage'] if veh else 'not in fleet master'}"); edges.append([ticket_id, v, "broke down"])
+    if t["driver_id"]:
+        d = (rows("select * from drivers where driver_id=?", t["driver_id"]) or [None])[0]
+        add(t["driver_id"], "driver", f"{t['driver_id']}\n{'joined ' + d['joining_date'] if d else 'unknown'}"); edges.append([ticket_id, t["driver_id"], "driven by"])
+    add(t["client"], "client", t["client"]); edges.append([ticket_id, t["client"], "consignment for"])
+    add(t["origin_hub"], "hub", f"{t['origin_hub']} hub"); edges.append([ticket_id, t["origin_hub"], f"{int(t['km_from_origin_hub'])} km from"])
+    for m in rows("select m.date, m.row, group_concat(e.kind) kinds from maintenance m join maint_events e on e.maint_row=m.row where vehicle_canon=? and date<=? and kind in ('brake_work','jugaad','permanent_fix_pending') group by m.row order by date desc limit 4", v, t["created_at"]):
+        add(f"m{m['row']}", "maintenance", f"{m['date']}\n{m['kinds'].replace('_', ' ')}"); edges.append([v, f"m{m['row']}", "log row " + str(m["row"])])
+    if w:
+        if w["replacement"]:
+            add(w["replacement"], "vehicle", f"{pretty_plate(w['replacement'])}\nreplacement"); edges.append([ticket_id, w["replacement"], f"replaced from {w['replacement_hub']}"])
+        for r in [r for r in (w["rules_applied"] or "").split(",") if r]:
+            add(r, "rule", f"{r}\n{RULES[r]['short']}"); edges.append([r, ticket_id, "applied"])
+        for s in json.loads(w["skipped"])[:6]:
+            add(s["vehicle"], "skipped", f"{pretty_plate(s['vehicle'])}\nskipped"); edges.append([s["rule"] if s["rule"] in RULES else ticket_id, s["vehicle"], s["why"][:40]])
+    seen, uniq = set(), []
+    for n in nodes:
+        if n["id"] not in seen:
+            seen.add(n["id"]); uniq.append(n)
+    return {"nodes": uniq, "edges": [{"from": a, "to": b, "label": l} for a, b, l in edges]}
+
+
+@app.get("/api/graph")
+def global_graph():
+    nodes, edges = [], []
+    for c in rows("select client, count(*) n from tickets group by client"):
+        nodes.append({"id": c["client"], "kind": "client", "label": f"{c['client']}\n{c['n']} tickets"})
+    for h in rows("select origin_hub, count(*) n from tickets group by origin_hub"):
+        nodes.append({"id": h["origin_hub"], "kind": "hub", "label": f"{h['origin_hub']} hub\n{h['n']} breakdowns"})
+    for e in rows("select client, origin_hub, count(*) n from tickets group by client, origin_hub"):
+        edges.append({"from": e["client"], "to": e["origin_hub"], "label": f"{e['n']}"})
+    for r in rows("select w.replacement_hub, w.rules_applied from work_orders w where replacement_hub is not null"):
+        for rid in [x for x in (r["rules_applied"] or "").split(",") if x in RULES]:
+            if not any(n["id"] == rid for n in nodes):
+                nodes.append({"id": rid, "kind": "rule", "label": f"{rid}\n{RULES[rid]['short']}"})
+            if not any(e["from"] == rid and e["to"] == r["replacement_hub"] for e in edges):
+                edges.append({"from": rid, "to": r["replacement_hub"], "label": ""})
+    return {"nodes": nodes, "edges": edges}
+
+
+# Must stay last: catch-all for the SPA.
 DIST = ROOT / "ui" / "dist"
 if DIST.exists():
     app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")

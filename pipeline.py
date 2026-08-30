@@ -256,7 +256,7 @@ def process(con, rec, source_file, seen):
             break
         if chosen:
             break
-    rules_hit = sorted({s["rule"] for s in skipped if s["rule"].startswith("R")})
+    rules_hit = [r for r in sorted({s["rule"] for s in skipped if s["rule"].startswith("R")}) if r not in applied]
     audit(con, tid, 4, STEPS[3], created, f"{chosen['canon'] + ' from ' + chosen_hub + ' hub' if chosen else 'NO eligible replacement'}; {len(skipped)} candidates skipped",
           {"chosen": dict(chosen) if chosen else None, "skipped": skipped, "hubs_considered": hubs_order[:3]}, applied + rules_hit)
 
