@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MapContainer, TileLayer, Marker, Polyline, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
-import { get, when } from './api'
+import { get, when, whenText } from './api'
 import { Btn, Card, CardTitle, Drawer, ErrorState, Icon, I, IconBtn, Loading, issueKind, kindIcon, statusText } from './ui'
 import { Detail } from './Approvals'
 import { Quarantined } from './Attention'
@@ -15,7 +15,7 @@ const hubIcon = L.divIcon({ className: '', iconSize: [14, 14], iconAnchor: [7, 7
 // Rows are built from strings the API already returns; no new backend fields. ponytail: regex on fixed server templates.
 const parseSummary = (s = '') => { const m = s.match(/^Truck (\S+) broke down (\d+) km from ([^,]+), (.*)$/); return m ? { truck: m[1], km: +m[2], origin: m[3], issue: m[4] } : { truck: '', km: 0, origin: '', issue: s } }
 const parseReplacement = (s = '') => s.match(/^Replacement (\S+) dispatched from (.+) hub$/)?.slice(1) || [null, null]
-const parseBody = (a) => ({ dest: a?.summary.match(/, \S+ to (.+)$/)?.[1] || '', eta: a?.body.match(/revised delivery time[^\d]*?(\d{1,2} \w{3,9}(?: at)? \d{1,2}:\d{2})/i)?.[1]?.replace(' at ', ' ') || '' })
+const parseBody = (a) => ({ dest: a?.summary.match(/, \S+ to (.+)$/)?.[1] || '', eta: whenText(a?.body.match(/revised delivery time[^\d]*?(\d{1,2} \w{3,9}(?: at)? \d{1,2}:\d{2})/i)?.[1] || '') })
 const skippedBy = (why = '') => [...why.matchAll(/(\d+) skipped by (R\d+)/g)].map(m => [m[2], +m[1]])
 
 export function buildRows({ items }, { pending, sent }, { quarantined }) {

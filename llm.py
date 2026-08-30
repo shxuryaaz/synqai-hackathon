@@ -103,14 +103,17 @@ def propose_match(name, canonicals):
     return out.strip() if out and out.strip() in canonicals else None
 
 
-MAP_SYS = ("You propose a field mapping from a client's ticket file to our ticket schema. Return JSON only: "
+MAP_SYS = ("You propose a field mapping from a client's breakdown-ticket file to our ticket schema. Return JSON only: "
            "{\"mapping\": {\"<column>\": {\"target\": <schema field or null>, \"confidence\": 0..1}}}. "
-           "Map every unknown column. Use null when nothing fits.")
+           "Schema fields: ticket_id (ticket reference), created_at (when the breakdown was logged), vehicle (truck registration plate), "
+           "driver_id (driver code like DRV-001), origin_hub (the hub/base/depot the truck left from, a city name), km_from_origin_hub (distance from that hub in km), "
+           "destination (city the truck was going to), issue (free-text fault description), severity (urgency/priority), client (customer name), status (ticket state), "
+           "resolution_note. Use the sample values to decide. Map every unknown column; each schema field at most once. Use null only when nothing fits.")
 
 
 def propose_mapping(unknown, samples, targets):
     """Column names + 2 masked sample rows -> {col: {target, confidence}} or None when the model is unavailable."""
-    out = ask(EXTRACT_MODEL, MAP_SYS, json.dumps({"unknown": unknown, "schema": targets, "samples": samples}, ensure_ascii=False, sort_keys=True))
+    out = ask(DRAFT_MODEL, MAP_SYS, json.dumps({"unknown": unknown, "schema": targets, "samples": samples}, ensure_ascii=False, sort_keys=True))
     try:
         m = json.loads(out.strip().strip("`").removeprefix("json"))["mapping"]
         return {c: {"target": (v.get("target") if v.get("target") in targets else None), "confidence": float(v.get("confidence") or 0)} for c, v in m.items() if c in unknown}
