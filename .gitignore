@@ -1,0 +1,12 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+store.sqlite
+outputs/
+audit/
+logs/
+ui/node_modules/
+ui/dist/
+.pytest_cache/
+titan-board/
