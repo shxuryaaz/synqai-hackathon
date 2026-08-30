@@ -34,6 +34,11 @@ async def guard(request, call_next):
     return response
 
 
+@app.get("/ping")
+def ping():
+    return {"ok": True}
+
+
 @app.get("/api/config")
 def config():
     return {"supabase_url": SUPABASE_URL, "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY")}
