@@ -11,7 +11,7 @@ const isMobile = () => window.innerWidth < 768
 const NAV = [['Overview', 'All'], ['Breakdowns', 'All'], ['Approvals', 'Waiting approval'], ['Audit', 'audit'], ['Evaluator', 'eval']]
 const BUSY_LABEL = { run: 'Running the pipeline', rerun: 'Running the re-run check', upload: 'Processing the new file' }
 
-export default function App() {
+export default function App({ auth }) {
   const [view, setView] = useState(() => isMobile() ? 'Waiting approval' : 'All')   // a FILTERS entry, 'audit', 'eval' or 'map'
   const [nav, setNav] = useState(() => isMobile() ? 'Approvals' : 'Overview')
   const [stats, setStats] = useState(null)
@@ -72,11 +72,11 @@ export default function App() {
             <IconBtn aria-label="Run pipeline" onClick={run} disabled={!!busy} className="bg-gold text-frame md:hidden"><Icon d={I.play} /></IconBtn>
             <IconBtn aria-label="Search" onClick={() => { go('Breakdowns', 'All'); setTimeout(() => document.querySelector('input[aria-label="Search breakdowns"]')?.focus(), 50) }} className="hidden sm:flex"><Icon d={I.search} size={20} /></IconBtn>
             <IconBtn aria-label={needs ? 'Items need attention' : 'Nothing needs attention'} onClick={() => go('Audit', 'audit')} className="relative hidden sm:flex"><Icon d={I.bell} size={20} />{needs && <span className="absolute right-3 top-2.5 h-2 w-2 rounded-full bg-gold" />}</IconBtn>
-            <div className="hidden h-[60px] items-center gap-3 whitespace-nowrap rounded-full bg-card2 py-2 pl-2 pr-4 xl:flex">
-              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-gold text-[15px] font-bold text-frame">D</span>
-              <span className="flex flex-col leading-tight"><span className="text-[15px] font-semibold">Dispatch desk</span><span className="text-[13px] text-sub">Dispatcher</span></span>
+            <button onClick={auth?.signOut || undefined} title={auth?.signOut ? `Signed in as ${auth.user?.email}. Click to sign out.` : undefined} className="hidden h-[60px] items-center gap-3 whitespace-nowrap rounded-full bg-card2 py-2 pl-2 pr-4 text-left xl:flex">
+              {auth?.user?.user_metadata?.avatar_url ? <img src={auth.user.user_metadata.avatar_url} alt="" referrerPolicy="no-referrer" className="h-11 w-11 rounded-full" /> : <span className="flex h-11 w-11 items-center justify-center rounded-full bg-gold text-[15px] font-bold text-frame">D</span>}
+              <span className="flex flex-col leading-tight"><span className="text-[15px] font-semibold">Dispatch desk</span><span className="max-w-[160px] truncate text-[13px] text-sub">{auth?.user?.email || 'Dispatcher'}</span></span>
               <Icon d={I.chev} size={18} className="text-sub" />
-            </div>
+            </button>
           </div>
         </header>
         <main className="min-w-0 pt-2 md:pt-3">

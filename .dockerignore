@@ -1,0 +1,14 @@
+.venv
+.env
+ui/node_modules
+ui/dist
+store.sqlite*
+outputs
+audit
+logs
+uploads
+.pytest_cache
+__pycache__
+titan-board
+.titan
+.git

@@ -1,18 +1,42 @@
 """FastAPI over the store. Every endpoint is a query; state changes go through pipeline/approve. Serves ui/dist."""
-import json, shutil
+import json, os, shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import yaml
 from common import ROOT, WORK, OUT, AUDIT, atomic_write_jsonl, db, mask, mask_data, has_pii, pretty_plate
-import pipeline, approve as approve_mod, rerun_check, pii_scan, query as query_mod
+import jwt
+import pipeline, approve as approve_mod, rerun_check, pii_scan, query as query_mod, persist
 
 app = FastAPI(title="Meridian Ops")
 RULES = {r["id"]: r for r in yaml.safe_load(open(ROOT / "rules.yaml"))["rules"]}
 H = pipeline.H
+SUPABASE_URL = os.environ.get("SUPABASE_URL")   # unset locally and in tests: no auth, no snapshots
+JWKS = jwt.PyJWKClient(f"{SUPABASE_URL}/auth/v1/.well-known/jwks.json") if SUPABASE_URL else None
+
+
+@app.middleware("http")
+async def guard(request, call_next):
+    """Every /api call needs a Supabase session when deployed; every successful write is snapshotted to Neon."""
+    path = request.url.path
+    if JWKS and path.startswith("/api/") and path != "/api/config":
+        try:
+            token = request.headers.get("authorization", "").split(" ", 1)[1]
+            jwt.decode(token, JWKS.get_signing_key_from_jwt(token).key, algorithms=["ES256"], audience="authenticated")
+        except Exception:
+            return JSONResponse({"detail": "Sign in required"}, status_code=401)
+    response = await call_next(request)
+    if request.method == "POST" and path.startswith("/api/") and response.status_code < 300:
+        persist.save()
+    return response
+
+
+@app.get("/api/config")
+def config():
+    return {"supabase_url": SUPABASE_URL, "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY")}
 
 
 def rows(sql, *args):
