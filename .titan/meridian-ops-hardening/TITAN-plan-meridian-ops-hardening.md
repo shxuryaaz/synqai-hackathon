@@ -163,3 +163,7 @@ Pieces 1, 2, and 3 can run together. Piece 4 follows 2. Piece 5 follows 1 and 4.
 Watch that only the winning approval transaction writes its audit row and projects JSONL.
 
 [Reviewer] Final acceptance passes. All audited scope is covered, with 58 tests and frontend checks passing without material scope creep.
+
+[Shipper] PR opened: https://github.com/shxuryaaz/synqai-hackathon/pull/1
+
+[Planner] Shipped all seven local Titan tickets. Nothing was cut; production authentication and real message delivery remain outside this local demo.
